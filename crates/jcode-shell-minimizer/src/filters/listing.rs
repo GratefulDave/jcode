@@ -536,12 +536,12 @@ fn format_human_size(size: u64) -> String {
 }
 
 fn compact_cat_output(ctx: &MinimizerCtx<'_>, input: &str) -> String {
+	if ctx.config.source_outline_level != OutlineLevel::Aggressive {
+		return input.to_string();
+	}
 	let Some(path) = extract_single_path_arg(ctx.command, ctx.program) else {
 		return input.to_string();
 	};
-	if let Some(summary) = summarize_manifest(&path, input) {
-		return summary;
-	}
 	if !is_source_path(&path) {
 		return input.to_string();
 	}
@@ -574,209 +574,6 @@ fn extract_single_path_arg(command: &str, program: &str) -> Option<String> {
 	path
 }
 
-fn summarize_manifest(path: &str, input: &str) -> Option<String> {
-	let name = Path::new(path).file_name()?.to_str()?;
-	match name {
-		"Cargo.toml" => summarize_cargo_toml(input),
-		"package.json" => summarize_package_json(input),
-		"go.mod" => summarize_go_mod(input),
-		_ => None,
-	}
-}
-
-fn summarize_cargo_toml(input: &str) -> Option<String> {
-	let mut package_name = None;
-	let mut dependencies = Vec::new();
-	let mut section = "";
-	for line in input.lines() {
-		let trimmed = line.trim();
-		if trimmed.starts_with('[') && trimmed.ends_with(']') {
-			section = trimmed.trim_matches(&['[', ']'][..]);
-			continue;
-		}
-		if section == "package" && trimmed.starts_with("name") && package_name.is_none() {
-			package_name = parse_toml_string_value(trimmed);
-			continue;
-		}
-		if matches!(section, "dependencies" | "dev-dependencies" | "build-dependencies")
-			&& let Some(dep) = parse_toml_dependency_line(trimmed)
-		{
-			dependencies.push(dep);
-		}
-	}
-	if dependencies.is_empty() {
-		return None;
-	}
-	let mut out = String::from("Cargo.toml");
-	if let Some(name) = package_name {
-		out.push_str(": ");
-		out.push_str(&name);
-	}
-	out.push('\n');
-	out.push_str("dependencies: ");
-	out.push_str(&dependencies.len().to_string());
-	out.push('\n');
-	for dep in dependencies.iter().take(15) {
-		out.push_str("  ");
-		out.push_str(dep);
-		out.push('\n');
-	}
-	if dependencies.len() > 15 {
-		out.push_str("  […");
-		out.push_str(&(dependencies.len() - 15).to_string());
-		out.push_str(" dependencies elided…]\n");
-	}
-	Some(out)
-}
-
-fn parse_toml_string_value(line: &str) -> Option<String> {
-	let (_, value) = line.split_once('=')?;
-	let value = value.trim();
-	Some(value.trim_matches('"').to_string())
-}
-
-fn parse_toml_dependency_line(line: &str) -> Option<String> {
-	if line.is_empty() || line.starts_with('#') {
-		return None;
-	}
-	let (name, value) = line.split_once('=')?;
-	let name = name.trim();
-	if name.is_empty() {
-		return None;
-	}
-	let version = parse_dependency_version(value.trim());
-	Some(match version {
-		Some(version) => format!("{name} {version}"),
-		None => name.to_string(),
-	})
-}
-
-fn parse_dependency_version(value: &str) -> Option<String> {
-	if value.starts_with('"') {
-		return Some(value.trim_matches('"').to_string());
-	}
-	if let Some(start) = value.find("version") {
-		let after = value[start..].split_once('=')?.1.trim();
-		if let Some(rest) = after.strip_prefix('"')
-			&& let Some(end) = rest.find('"')
-		{
-			return Some(rest[..end].to_string());
-		}
-		return after
-			.split_whitespace()
-			.next()
-			.map(|version| version.trim_matches(&[',', '}'][..]).to_string());
-	}
-	None
-}
-
-fn summarize_package_json(input: &str) -> Option<String> {
-	let value: serde_json::Value = serde_json::from_str(input).ok()?;
-	let name = value.get("name").and_then(|value| value.as_str());
-	let mut deps = Vec::new();
-	for section in ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] {
-		let Some(object) = value.get(section).and_then(|value| value.as_object()) else {
-			continue;
-		};
-		for (dep, version) in object {
-			let version = version.as_str().unwrap_or("");
-			deps.push(if version.is_empty() {
-				dep.clone()
-			} else {
-				format!("{dep} {version}")
-			});
-		}
-	}
-	if deps.is_empty() {
-		return None;
-	}
-	let mut out = String::from("package.json");
-	if let Some(name) = name {
-		out.push_str(": ");
-		out.push_str(name);
-	}
-	out.push('\n');
-	out.push_str("dependencies: ");
-	out.push_str(&deps.len().to_string());
-	out.push('\n');
-	for dep in deps.iter().take(15) {
-		out.push_str("  ");
-		out.push_str(dep);
-		out.push('\n');
-	}
-	if deps.len() > 15 {
-		out.push_str("  […");
-		out.push_str(&(deps.len() - 15).to_string());
-		out.push_str(" dependencies elided…]\n");
-	}
-	Some(out)
-}
-
-fn summarize_go_mod(input: &str) -> Option<String> {
-	let mut module = None;
-	let mut deps = Vec::new();
-	let mut in_require_block = false;
-	for line in input.lines() {
-		let trimmed = line.trim();
-		if let Some(value) = trimmed.strip_prefix("module ") {
-			module = Some(value.trim().to_string());
-			continue;
-		}
-		if trimmed == "require (" {
-			in_require_block = true;
-			continue;
-		}
-		if in_require_block && trimmed == ")" {
-			in_require_block = false;
-			continue;
-		}
-		if let Some(dep) = parse_go_require_line(trimmed, in_require_block) {
-			deps.push(dep);
-		}
-	}
-	if deps.is_empty() {
-		return None;
-	}
-	let mut out = String::from("go.mod");
-	if let Some(module) = module {
-		out.push_str(": ");
-		out.push_str(&module);
-	}
-	out.push('\n');
-	out.push_str("dependencies: ");
-	out.push_str(&deps.len().to_string());
-	out.push('\n');
-	for dep in deps.iter().take(15) {
-		out.push_str("  ");
-		out.push_str(dep);
-		out.push('\n');
-	}
-	if deps.len() > 15 {
-		out.push_str("  […");
-		out.push_str(&(deps.len() - 15).to_string());
-		out.push_str(" dependencies elided…]\n");
-	}
-	Some(out)
-}
-
-fn parse_go_require_line(line: &str, in_block: bool) -> Option<String> {
-	let rest = if in_block {
-		line
-	} else {
-		line.strip_prefix("require ")?
-	};
-	let mut parts = rest.split_whitespace();
-	let name = parts.next()?;
-	let version = parts.next().unwrap_or("");
-	if name.is_empty() || name.starts_with("//") {
-		return None;
-	}
-	Some(if version.is_empty() {
-		name.to_string()
-	} else {
-		format!("{name} {version}")
-	})
-}
 
 fn is_source_path(path: &str) -> bool {
 	let Some(ext) = Path::new(path).extension().and_then(|value| value.to_str()) else {
@@ -1359,16 +1156,13 @@ mod tests {
 	}
 
 	#[test]
-	fn summarizes_cargo_manifest_from_cat() {
+	fn preserves_cargo_manifest_from_default_cat() {
 		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
 		let ctx = ctx_command("cat", "cat Cargo.toml", &cfg);
 		let input = "[package]\nname = \"rtk\"\n\n[dependencies]\nclap = { version = \"4\", \
 		             features = [\"derive\"] }\nanyhow = \"1.0\"\nserde_json = \"1\"\n";
 		let out = filter(&ctx, input, 0);
-		assert_eq!(
-			out.text,
-			"Cargo.toml: rtk\ndependencies: 3\n  clap 4\n  anyhow 1.0\n  serde_json 1\n"
-		);
+		assert_eq!(out.text, input);
 	}
 
 	#[test]
@@ -1404,7 +1198,7 @@ mod tests {
 	}
 
 	#[test]
-	fn outlines_large_source_cat() {
+	fn preserves_large_source_from_default_cat() {
 		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
 		let ctx = ctx_command("cat", "cat src/main.rs", &cfg);
 		let mut input = String::from("use anyhow::Result;\nmod cargo_cmd;\n\nstruct Cli {\n");
@@ -1415,12 +1209,7 @@ mod tests {
 		}
 		input.push_str("}\nfn main() -> Result<()> {\n    Ok(())\n}\n");
 		let out = filter(&ctx, &input, 0);
-		assert!(out.text.contains("use anyhow::Result;"));
-		assert!(out.text.contains("mod cargo_cmd;"));
-		assert!(out.text.contains("struct Cli { ... }"));
-		assert!(out.text.contains("fn main() -> Result<()> { ... }"));
-		assert!(out.text.contains("lines summarized"));
-		assert!(!out.text.contains("field_179"));
+		assert_eq!(out.text, input);
 	}
 
 	#[test]

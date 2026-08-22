@@ -26,8 +26,6 @@ pub enum MinimizerMode {
 	None,
 	/// Capture the whole command and apply one filter to the whole buffer.
 	WholeCommand,
-	/// Execute a safe `&&` / `;` chain segment-by-segment.
-	SegmentedChain,
 }
 
 /// Return the minimization mode for a command.
@@ -44,25 +42,10 @@ pub fn mode_for(command: &str, config: &MinimizerConfig) -> MinimizerMode {
 				MinimizerMode::None
 			}
 		},
-		plan::CommandPlan::Chain { segments } => {
-			// Only route a chain through the segmented runner when the minimizer is
-			// enabled, the legacy kill-switch is off, at least one segment is
-			// eligible, and no segment can permanently rewire the shell's own file
-			// descriptors (`exec >out`). Any failed guard restores the pre-PR
-			// single-exec passthrough behaviour.
-			if config.enabled
-				&& !config.legacy_filters_active()
-				&& chain_has_eligible_segment(&segments, config)
-				&& !chain_mutates_shell_fds(&segments)
-			{
-				MinimizerMode::SegmentedChain
-			} else {
-				MinimizerMode::None
-			}
-		},
-		plan::CommandPlan::Compound | plan::CommandPlan::Piped | plan::CommandPlan::Unsupported => {
-			MinimizerMode::None
-		},
+		plan::CommandPlan::Chain { .. }
+		| plan::CommandPlan::Compound
+		| plan::CommandPlan::Piped
+		| plan::CommandPlan::Unsupported => MinimizerMode::None,
 	}
 }
 
@@ -78,11 +61,8 @@ pub fn should_minimize(command: &str, config: &MinimizerConfig) -> bool {
 /// minimization can never be the reason a shell command loses output.
 ///
 /// When a filter actually rewrites the text, the returned
-/// [`MinimizerOutput`] carries the original buffer in `original_text` so the
-/// JS session layer can persist it via its `ArtifactManager` and splice an
-/// `artifact://<id>` reference back into the visible text before showing it
-/// to the agent. The minimizer itself never formats the reference — ids are
-/// assigned by the session store, not content-addressed.
+/// [`MinimizerOutput`] keeps the original buffer in `original_text` so the
+/// caller can persist or compare it. This crate does not mint artifact ids.
 #[must_use]
 pub fn apply(
 	command: &str,
@@ -169,133 +149,6 @@ fn identity_has_filter(identity: &detect::CommandIdentity, config: &MinimizerCon
 		|| resolve_pipeline(config, &identity.program, subcommand).is_some()
 }
 
-fn chain_has_eligible_segment(segments: &[plan::ChainSegment], config: &MinimizerConfig) -> bool {
-	segments.iter().any(|segment| {
-		detect::detect(&segment.command)
-			.is_some_and(|identity| identity_has_filter(&identity, config))
-			|| is_common_chain_utility(&segment.program)
-	})
-}
-
-/// True when any segment can permanently rewire the shell's own file
-/// descriptors. The segmented chain runner executes each segment in a fresh
-/// capture context with its own stdout/stderr pipe, so fd mutations made by one
-/// segment (e.g. `exec >out`, `exec 2>err`) are not honored by the segments
-/// that follow: output the user redirected to a file would instead be captured
-/// and returned to the caller. When such a segment is present we refuse to
-/// segment and leave the chain opaque (passthrough), preserving the original
-/// redirection semantics.
-fn chain_mutates_shell_fds(segments: &[plan::ChainSegment]) -> bool {
-	segments.iter().any(is_shell_fd_mutating_segment)
-}
-
-/// True when a segment's effective command can mutate the shell parse/runtime
-/// environment in a way that segmented execution cannot preserve.
-///
-/// `exec` rewires fds; `eval` / `source` / `.` can introduce that opaquely;
-/// `alias` / `unalias` change how later words in separate `run_string` calls
-/// are expanded. Resolves the simple direct case from the parsed program word
-/// first so quoted assignments such as `FOO="a b" exec >out` cannot fool the
-/// fallback whitespace scan.
-fn is_shell_fd_mutating_segment(segment: &plan::ChainSegment) -> bool {
-	if is_shell_state_mutating_program(&segment.program) {
-		return true;
-	}
-	if matches!(segment.program.as_str(), "command" | "builtin")
-		&& command_wrapper_invokes_mutator(segment)
-	{
-		return true;
-	}
-	false
-}
-
-fn is_shell_state_mutating_program(program: &str) -> bool {
-	matches!(program, "exec" | "eval" | "source" | "." | "alias" | "unalias")
-}
-
-fn command_wrapper_invokes_mutator(segment: &plan::ChainSegment) -> bool {
-	for word in segment.command.split_whitespace() {
-		if is_shell_state_mutating_program(word) {
-			return true;
-		}
-		// A split quoted assignment means we are no longer looking at real shell
-		// words. Stay opaque rather than proving safety from corrupted tokens.
-		if is_ambiguous_assignment_fragment(word) {
-			return true;
-		}
-		if word == "command" || word == "builtin" || word.starts_with('-') || is_env_assignment(word)
-		{
-			continue;
-		}
-		return false;
-	}
-	false
-}
-
-fn is_ambiguous_assignment_fragment(word: &str) -> bool {
-	is_env_assignment(word) && (word.contains('"') || word.contains('\''))
-}
-
-/// True for a leading `KEY=value` environment assignment (a prefix that does
-/// not change which command word ultimately runs).
-fn is_env_assignment(word: &str) -> bool {
-	word.split_once('=').is_some_and(|(key, _)| {
-		!key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-	})
-}
-
-/// Common shell utilities that on their own would not warrant whole-command
-/// minimization, but whose presence in a `&&` / `;` chain alongside other
-/// segments is enough to fire the segmented chain runner. Each such segment
-/// is captured and passes through `minimizer::apply` which will treat it as
-/// `Single` with no matching filter and stream the text unchanged.
-fn is_common_chain_utility(program: &str) -> bool {
-	matches!(
-		program,
-		"echo"
-			| "printf"
-			| "head"
-			| "tail"
-			| "file"
-			| "which"
-			| "type"
-			| "sed"
-			| "awk"
-			| "sleep"
-			| "seq"
-			| "cp" | "mv"
-			| "rm" | "mkdir"
-			| "rmdir"
-			| "touch"
-			| "basename"
-			| "dirname"
-			| "realpath"
-			| "readlink"
-			| "true"
-			| "false"
-			| "yes"
-			| "tr" | "tee"
-			| "sort"
-			| "uniq"
-			| "cut"
-			| "paste"
-			| "rev"
-			| "split"
-			| "comm"
-			| "patch"
-			| "xargs"
-			| "unzip"
-			| "zip"
-			| "tar"
-			| "gzip"
-			| "gunzip"
-			| "cd" | "pwd"
-			| "export"
-			| "env"
-			| "test"
-	)
-}
-
 fn apply_identity(
 	identity: &detect::CommandIdentity,
 	command: &str,
@@ -364,8 +217,8 @@ fn ensure_success_visible(output: MinimizerOutput, exit_code: i32) -> MinimizerO
 	}
 }
 
-/// Per-program label for telemetry. Returns one of a fixed static set so the
-/// N-API boundary can carry it as `&'static str` without allocation.
+/// Per-program label for telemetry. Returns one of a fixed static set so
+/// callers can carry it as `&'static str` without allocation.
 fn program_label(program: &str) -> &'static str {
 	match program {
 		"git" => "git",
@@ -812,13 +665,12 @@ strip_lines_matching = [".*"]
 		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
 		assert_eq!(
 			mode_for("git diff --stat && git diff --name-only", &cfg),
-			MinimizerMode::SegmentedChain
+			MinimizerMode::None
 		);
-		assert_eq!(mode_for("git diff ; printf done", &cfg), MinimizerMode::SegmentedChain);
-		// Common shell utilities make a chain eligible for the segmented runner
-		// even when no segment has a dedicated filter — segments stream through
-		// per-segment passthrough so the chain itself is captured for telemetry.
-		assert_eq!(mode_for("false && echo no ; echo yes", &cfg), MinimizerMode::SegmentedChain);
+		assert_eq!(mode_for("git diff ; printf done", &cfg), MinimizerMode::None);
+		// Chains are never segmented: common utilities no longer make a chain
+		// eligible for a segmented runner.
+		assert_eq!(mode_for("false && echo no ; echo yes", &cfg), MinimizerMode::None);
 		assert_eq!(mode_for("foo || bar", &cfg), MinimizerMode::None);
 		assert_eq!(mode_for("git status | cat", &cfg), MinimizerMode::None);
 		assert_eq!(mode_for("sleep 1 &", &cfg), MinimizerMode::None);
@@ -837,7 +689,7 @@ strip_lines_matching = [".*"]
 		let input = "diff --git a/file.rs b/file.rs\n@@\n-old\n+new\n";
 		let before = thread_unknown_command_count();
 
-		assert_eq!(mode_for("git diff ; printf done", &cfg), MinimizerMode::SegmentedChain);
+		assert_eq!(mode_for("git diff ; printf done", &cfg), MinimizerMode::None);
 		let out = apply("git diff ; printf done", input, 0, &cfg);
 
 		// Whole-buffer entry: a mixed chain (`git diff` + `printf`) stays opaque
@@ -1078,8 +930,8 @@ strip_lines_matching = [".*"]
 		assert_eq!(mode_for("alias cat='printf hacked' ; cat file", &cfg), MinimizerMode::None);
 		assert_eq!(mode_for("unalias cat ; cat file", &cfg), MinimizerMode::None);
 		// A real command merely named with `exec` as an argument is not the
-		// builtin and must NOT block segmentation.
-		assert_eq!(mode_for("echo exec ; printf done", &cfg), MinimizerMode::SegmentedChain);
+		// builtin; chains stay unsegmented regardless.
+		assert_eq!(mode_for("echo exec ; printf done", &cfg), MinimizerMode::None);
 		// Such chains pass through untouched.
 		let out = apply("exec >out ; echo hi", "hi\n", 0, &cfg);
 		assert_eq!(out.text, "hi\n");

@@ -51,11 +51,8 @@ pub struct MinimizerOutput {
 	/// `"pipeline-noop"`).
 	pub filter:        &'static str,
 	/// Original (un-minimized) capture, surfaced only when the filter
-	/// actually rewrote the output. The caller (JS session layer) is expected
-	/// to persist this via its session-scoped `ArtifactManager` and splice an
-	/// `artifact://<id>` reference into [`text`](Self::text) before
-	/// presenting it to the agent. The minimizer itself does not hold onto
-	/// the original past this struct.
+	/// actually rewrote the output. The caller can persist or compare this;
+	/// the crate does not mint artifact ids.
 	pub original_text: Option<String>,
 }
 
@@ -117,28 +114,6 @@ impl MinimizerOutput {
 	}
 }
 
-/// Aggregate output for a segmented chain.
-#[allow(
-	clippy::missing_const_for_fn,
-	reason = "kept non-const because this constructs owned output used only at runtime"
-)]
-pub(crate) fn chain_output(
-	text: String,
-	original_text: String,
-	input_bytes: usize,
-	changed: bool,
-) -> MinimizerOutput {
-	let filter = if changed { "chain" } else { "chain-noop" };
-	let output_bytes = text.len();
-	MinimizerOutput {
-		text,
-		changed,
-		input_bytes,
-		output_bytes,
-		filter,
-		original_text: Some(original_text),
-	}
-}
 /// Apply the configured filter pipeline to a captured buffer.
 /// Returns the original text unchanged when minimization is disabled, no
 /// filter matches, or a filter panics.

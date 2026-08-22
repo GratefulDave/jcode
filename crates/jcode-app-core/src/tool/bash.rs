@@ -751,6 +751,8 @@ fn format_minimized_command_output(mut output: String, exit_code: Option<i32>) -
 mod utf8_truncation_tests {
     #[cfg(any(windows, unix))]
     use super::build_shell_command;
+    #[cfg(unix)]
+    use super::wrap_repo_cargo_commands;
     use super::{format_command_output, format_command_output_with};
     use jcode_shell_minimizer::MinimizerOptions;
 
@@ -804,6 +806,87 @@ mod utf8_truncation_tests {
             output.contains("[…160 paths elided…]"),
             "expected path elision marker: {output}"
         );
+    }
+
+    #[cfg(unix)]
+    fn isolated_jcode_repo(with_cargo_wrapper: bool) -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().expect("temp repo");
+        std::fs::create_dir_all(temp.path().join(".git")).expect("git dir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"jcode\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("Cargo.toml");
+        if with_cargo_wrapper {
+            let scripts = temp.path().join("scripts");
+            std::fs::create_dir_all(&scripts).expect("scripts dir");
+            std::fs::write(scripts.join("dev_cargo.sh"), "#!/bin/sh\nexec cargo \"$@\"\n")
+                .expect("dev_cargo.sh");
+        }
+        temp
+    }
+
+    #[cfg(unix)]
+    fn verbose_git_status_output() -> String {
+        let mut raw = String::from("## main...origin/main\n");
+        for i in 0..200 {
+            raw.push_str(&format!(" M src/file_{i}.rs\n"));
+        }
+        assert!(raw.chars().count() >= 1000);
+        raw
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_wrapper_from_isolated_repo_is_compound_passthrough() {
+        let repo = isolated_jcode_repo(true);
+        let wrapped = wrap_repo_cargo_commands("git status", Some(repo.path())).expect("wrapper");
+        assert!(
+            wrapped.contains("export JCODE_DEV_CARGO_SCRIPT="),
+            "spawn blob must include cargo wrapper: {wrapped}"
+        );
+        let raw = verbose_git_status_output();
+        let options = MinimizerOptions {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let wrapped_output = format_command_output_with(&wrapped, raw.clone(), Some(0), &options);
+        assert!(
+            !wrapped_output.contains("[output minimized via"),
+            "compound wrapper must remain passthrough: {wrapped_output}"
+        );
+        let identity_output =
+            format_command_output_with("git status", raw.clone(), Some(0), &options);
+        assert!(identity_output.contains("[output minimized via"));
+        assert!(identity_output.contains("src/file_0.rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minimizer_works_from_repo_without_dev_cargo_wrapper() {
+        let repo = isolated_jcode_repo(false);
+        assert!(
+            wrap_repo_cargo_commands("git status", Some(repo.path())).is_none(),
+            "isolated repo without scripts/dev_cargo.sh must not wrap"
+        );
+        let raw = verbose_git_status_output();
+        let output = format_command_output_with(
+            "git status",
+            raw.clone(),
+            Some(0),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(
+            output.len() < raw.len(),
+            "git status should shrink without cargo wrapper: raw={} out={}",
+            raw.len(),
+            output.len()
+        );
+        assert!(output.contains("[output minimized via"));
+        assert!(output.contains("src/file_0.rs"));
     }
 
     #[test]
@@ -1039,7 +1122,7 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let mut params: BashInput = serde_json::from_value(input)?;
+        let params: BashInput = serde_json::from_value(input)?;
         let run_in_background = params.run_in_background.unwrap_or(false);
 
         // Destructive-command gate (#604), before background dispatch.
@@ -1051,22 +1134,16 @@ impl Tool for BashTool {
             return Err(anyhow::anyhow!(refusal));
         }
 
-        #[cfg(unix)]
-        if let Some(wrapped) = wrap_repo_cargo_commands(&params.command, ctx.working_dir.as_deref())
-        {
-            params.command = wrapped;
-        }
-
-        if run_in_background {
-            return self.execute_background(params, ctx).await;
-        }
+        // Keep the supplied command as the display and minimization identity.
+        // Rewrites below apply only to the string passed to the shell.
+        let mut spawn_command = params.command.clone();
 
         // Auto-detect browser bridge commands and rewrite them to the installed
         // binary when available, but do not run setup automatically. Browser
         // setup should stay an explicit status/setup flow rather than a default
         // side effect of trying to use the browser.
-        if crate::browser::is_browser_command(&params.command) {
-            params.command = crate::browser::rewrite_command_with_full_path(&params.command);
+        if !run_in_background && crate::browser::is_browser_command(&spawn_command) {
+            spawn_command = crate::browser::rewrite_command_with_full_path(&spawn_command);
 
             // Start/attach a browser session for this jcode session.
             // This gives each agent its own browser tab, preventing
@@ -1075,12 +1152,22 @@ impl Tool for BashTool {
                 && std::env::var("BROWSER_SESSION").is_err()
                 && let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id)
             {
-                params.command = format!("BROWSER_SESSION={} {}", session_name, params.command);
+                spawn_command = format!("BROWSER_SESSION={} {}", session_name, spawn_command);
             }
         }
 
+        #[cfg(unix)]
+        if let Some(wrapped) = wrap_repo_cargo_commands(&spawn_command, ctx.working_dir.as_deref())
+        {
+            spawn_command = wrapped;
+        }
+
+        if run_in_background {
+            return self.execute_background(params, ctx, spawn_command).await;
+        }
+
         // Foreground execution with stdin detection
-        self.execute_foreground(&params, &ctx).await
+        self.execute_foreground(&params, &ctx, &spawn_command).await
     }
 }
 
@@ -1089,11 +1176,12 @@ impl BashTool {
         &self,
         params: &BashInput,
         ctx: &ToolContext,
+        spawn_command: &str,
     ) -> Result<ToolOutput> {
         #[cfg(unix)]
         if self.supports_reload_persistence(ctx) {
             return self
-                .execute_reload_persistable_foreground(params, ctx)
+                .execute_reload_persistable_foreground(params, ctx, spawn_command)
                 .await;
         }
 
@@ -1102,7 +1190,7 @@ impl BashTool {
 
         let has_stdin_channel = ctx.stdin_request_tx.is_some();
 
-        let mut command = build_shell_command(&params.command);
+        let mut command = build_shell_command(spawn_command);
         command
             .kill_on_drop(true)
             .stdout(Stdio::piped())
@@ -1314,6 +1402,7 @@ impl BashTool {
         &self,
         params: &BashInput,
         ctx: &ToolContext,
+        spawn_command: &str,
     ) -> Result<ToolOutput> {
         let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(600000);
         let timeout_duration = Duration::from_millis(timeout_ms);
@@ -1323,7 +1412,7 @@ impl BashTool {
         let info = manager.reserve_task_info();
         let display_name = summarize_background_command(params.intent.as_deref(), &params.command);
 
-        let mut cmd = build_detached_shell_wrapper(&params.command);
+        let mut cmd = build_detached_shell_wrapper(spawn_command);
         let stdout = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1466,7 +1555,12 @@ impl BashTool {
     }
 
     /// Execute a command in the background
-    async fn execute_background(&self, params: BashInput, ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute_background(
+        &self,
+        params: BashInput,
+        ctx: ToolContext,
+        spawn_command: String,
+    ) -> Result<ToolOutput> {
         let command = params.command.clone();
         let description = params.intent.clone();
         let display_name = summarize_background_command(description.as_deref(), &command);
@@ -1484,7 +1578,7 @@ impl BashTool {
                 notify,
                 wake,
 				move |output_path| async move {
-					let mut cmd = build_shell_command(&command);
+					let mut cmd = build_shell_command(&spawn_command);
 					#[cfg(unix)]
 					unsafe {
 						cmd.pre_exec(|| {

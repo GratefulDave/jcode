@@ -1,9 +1,9 @@
 //! Configuration for the shell output minimizer.
 //!
-//! [`MinimizerOptions`] is the N-API surface exposed through `ShellOptions`
-//! and `ShellExecuteOptions`. [`MinimizerConfig`] is the internal resolved
-//! view after merging field-level values with an optional TOML settings
-//! file.
+//! [`MinimizerOptions`] is the options bag resolved into [`MinimizerConfig`].
+//! jcode default-enables via `ShellMinimizerConfig` (`enabled` true) mapped
+//! in the bash tool. [`MinimizerConfig`] is the internal resolved view after
+//! merging field-level values with an optional TOML settings file.
 
 use std::{
 	collections::{HashMap, HashSet},
@@ -39,7 +39,8 @@ impl OutlineLevel {
 	}
 }
 
-/// N-API opt-in handle for the minimizer.
+/// Options bag resolved into [`MinimizerConfig`]; jcode default-enables via
+/// `ShellMinimizerConfig` (`enabled` true) mapped in the bash tool.
 #[derive(Debug, Clone, Default)]
 pub struct MinimizerOptions {
 	/// Master switch. Absent / false = disabled.
