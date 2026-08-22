@@ -11,8 +11,8 @@ pub use jcode_config_types::{
     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
-    WebSearchConfig, WebSearchEngine,
+    ShellMinimizerConfig, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
+    UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -165,6 +165,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_MCP_TOOLS",
     "JCODE_MCP_TOOLS_TOKEN_THRESHOLD",
     "JCODE_RETRY_BACKOFF_CAP_SECS",
+    "JCODE_SHELL_MINIMIZER_ENABLED",
     "JCODE_SWARM_ENABLED",
     "JCODE_SWARM_MODEL",
     "JCODE_SWARM_MAX_CONCURRENT_AGENTS",
@@ -483,6 +484,9 @@ pub struct Config {
 
     /// Built-in tool exposure configuration
     pub tools: ToolConfig,
+
+    /// Bash-tool output minimizer (git/cargo/pytest/… condensers).
+    pub shell_minimizer: ShellMinimizerConfig,
 
     /// Agent Client Protocol adapter configuration
     pub acp: AcpConfig,

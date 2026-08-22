@@ -706,7 +706,12 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
     cmd
 }
 
-fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
+#[path = "bash_minimizer.rs"]
+mod bash_minimizer;
+use bash_minimizer::minimize_command_output;
+
+fn format_command_output(command: &str, mut output: String, exit_code: Option<i32>) -> String {
+    output = minimize_command_output(command, output, exit_code);
     if output.len() > MAX_OUTPUT_LEN {
         output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
         output.push_str("\n... (output truncated)");
@@ -732,9 +737,29 @@ mod utf8_truncation_tests {
     #[test]
     fn format_command_output_truncates_on_utf8_boundary() {
         let input = format!("{}é", "a".repeat(29_999));
-        let output = format_command_output(input, None);
+        let output = format_command_output("echo", input, None);
         assert!(output.ends_with("\n... (output truncated)"));
         assert!(output.starts_with(&"a".repeat(29_999)));
+    }
+
+    #[test]
+    fn format_command_output_minimizes_verbose_git_status() {
+        let mut raw = String::from("## main...origin/main\n");
+        for i in 0..200 {
+            raw.push_str(&format!(" M src/file_{i}.rs\n"));
+        }
+        assert!(raw.chars().count() >= 1000);
+        let output = format_command_output("git status", raw.clone(), Some(0));
+        assert!(
+            output.len() < raw.len(),
+            "expected git status to shrink: raw={} out={}",
+            raw.len(),
+            output.len()
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "expected minimizer footer: {output}"
+        );
     }
 
     #[cfg(windows)]
@@ -953,6 +978,7 @@ impl BashTool {
         let stdin_tx = ctx.stdin_request_tx.clone();
         let tool_call_id = ctx.tool_call_id.clone();
         let title_for_work = title.clone();
+        let command_for_work = params.command.clone();
         // Track progress parsed from output so a timeout promotion starts the
         // background task at the real percentage instead of 0%.
         let promoted_progress = std::sync::Arc::new(PromotedCommandProgress::default());
@@ -1056,7 +1082,7 @@ impl BashTool {
                     }
                     output.push_str(&stderr);
                 }
-                let output = format_command_output(output, status.code());
+                let output = format_command_output(&command_for_work, output, status.code());
                 Ok(ToolOutput::new(output).with_title(title_for_work))
             });
 
@@ -1167,7 +1193,7 @@ impl BashTool {
                 let _ = tokio::fs::remove_file(&info.output_file).await;
                 let _ = tokio::fs::remove_file(&info.status_file).await;
                 return Ok(
-                    ToolOutput::new(format_command_output(output, status.code())).with_title(
+                    ToolOutput::new(format_command_output(&params.command, output, status.code())).with_title(
                         params
                             .intent
                             .clone()

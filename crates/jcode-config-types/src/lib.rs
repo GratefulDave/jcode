@@ -1538,6 +1538,69 @@ pub struct LaunchHotkeysConfig {
     pub imported: bool,
 }
 
+/// Bash-tool output minimizer. Compresses verbose command output (git, cargo,
+/// pytest, …) before it is sent to the model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ShellMinimizerConfig {
+    /// Master switch. Default true.
+    pub enabled: bool,
+    /// Optional extra TOML settings file (`~` expanded). Merges user pipelines.
+    pub settings_path: Option<String>,
+    /// Allowlist of program names. Empty = all built-in filters.
+    pub only: Vec<String>,
+    /// Program names excluded from minimization.
+    pub except: Vec<String>,
+    /// Capture cap in bytes; over this the raw output is kept. Default 4 MiB.
+    pub max_capture_bytes: u32,
+    /// `default` or `aggressive` source outlining for `cat` of source files.
+    pub source_outline_level: String,
+    /// When Some(true), use the conservative legacy grep/find/pytest path.
+    pub legacy_filters: Option<bool>,
+}
+
+impl Default for ShellMinimizerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            settings_path: None,
+            only: Vec::new(),
+            except: Vec::new(),
+            max_capture_bytes: 4 * 1024 * 1024,
+            source_outline_level: "default".to_string(),
+            legacy_filters: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod shell_minimizer_config_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_enabled_with_4mib_cap() {
+        let cfg = ShellMinimizerConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_capture_bytes, 4 * 1024 * 1024);
+        assert_eq!(cfg.source_outline_level, "default");
+        assert!(cfg.only.is_empty());
+        assert!(cfg.except.is_empty());
+    }
+
+    #[test]
+    fn json_object_deserializes() {
+        let cfg: ShellMinimizerConfig = serde_json::from_str(
+            r#"{"enabled":false,"only":["git"],"except":["docker"],"max_capture_bytes":1024,"source_outline_level":"aggressive"}"#,
+        )
+        .expect("parse");
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.only, vec!["git"]);
+        assert_eq!(cfg.except, vec!["docker"]);
+        assert_eq!(cfg.max_capture_bytes, 1024);
+        assert_eq!(cfg.source_outline_level, "aggressive");
+    }
+}
+
 #[cfg(test)]
 mod reasoning_display_defaults_tests {
     use super::*;
