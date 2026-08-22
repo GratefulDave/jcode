@@ -18,7 +18,7 @@ pub mod plan;
 
 use std::borrow::Cow;
 
-pub use config::{MinimizerConfig, MinimizerOptions};
+pub use config::{hash_settings_contents, hash_settings_file, MinimizerConfig, MinimizerOptions};
 
 /// Per-invocation context passed to every filter.
 #[derive(Debug, Clone)]

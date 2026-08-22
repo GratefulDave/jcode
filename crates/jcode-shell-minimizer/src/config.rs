@@ -61,7 +61,9 @@ pub struct MinimizerOptions {
 	/// the raw, un-minimized output. Default 4 MiB.
 	pub max_capture_bytes:    Option<u32>,
 	/// Source-outline level for `cat <source-file>` minimization. Accepts
-	/// `"default"` (current behavior) or `"aggressive"` (strip function bodies).
+	/// `"default"` (outline files of ≥160 lines / 12 KiB into imports +
+	/// declarations) or `"aggressive"` (additionally strip function bodies
+	/// at any size).
 	pub source_outline_level: Option<String>,
 	/// Kill-switch to fall back to the pre-PR (legacy) filter behavior for
 	/// grep / find / pytest. When `Some(true)`, filters that opted into the
@@ -213,6 +215,31 @@ impl MinimizerConfig {
 	pub const fn legacy_filters_active(&self) -> bool {
 		self.legacy_filters_active
 	}
+}
+
+/// xxHash64 hex digest used to pin [`MinimizerOptions::settings_hash`] to a
+/// known-good settings-file snapshot. Callers derive it from the resolved
+/// settings file content so `MinimizerConfig::from_options` can refuse a
+/// file mutated after resolution (lex's trust gate for agent-controllable
+/// paths).
+#[must_use]
+pub fn hash_settings_contents(contents: &str) -> String {
+	format!("{:016x}", xxhash_rust::xxh64::xxh64(contents.as_bytes(), 0))
+}
+
+/// Convenience wrapper: read `path` (`~` expanded) and return its
+/// [`hash_settings_contents`] digest. `None` when the path is empty,
+/// absent, or unreadable.
+#[must_use]
+pub fn hash_settings_file(path: &str) -> Option<String> {
+	if path.is_empty() {
+		return None;
+	}
+	let expanded = expand_tilde(path);
+	fs::read_to_string(expanded)
+		.ok()
+		.as_deref()
+		.map(hash_settings_contents)
 }
 
 #[derive(Debug, Default, Deserialize)]

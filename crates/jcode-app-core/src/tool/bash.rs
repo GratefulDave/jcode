@@ -730,10 +730,23 @@ fn format_command_output_with(
     )
 }
 
-fn format_minimized_command_output(mut output: String, exit_code: Option<i32>) -> String {
+fn format_minimized_command_output(
+    minimized: bash_minimizer::MinimizedOutput,
+    exit_code: Option<i32>,
+) -> String {
+    let mut output = minimized.text;
     if output.len() > MAX_OUTPUT_LEN {
         output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
         output.push_str("\n... (output truncated)");
+    }
+
+    // Append the minimizer marker after truncation so it survives the
+    // MAX_OUTPUT_LEN cut even when the minimized body alone exceeds it.
+    if let Some(footer) = minimized.footer {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&footer);
     }
 
     if let Some(code) = exit_code.filter(|code| *code != 0) {
@@ -753,7 +766,7 @@ mod utf8_truncation_tests {
     use super::build_shell_command;
     #[cfg(unix)]
     use super::wrap_repo_cargo_commands;
-    use super::{format_command_output, format_command_output_with};
+    use super::{format_command_output, format_command_output_with, MAX_OUTPUT_LEN};
     use jcode_shell_minimizer::MinimizerOptions;
 
     #[test]
@@ -996,6 +1009,50 @@ mod utf8_truncation_tests {
         );
         assert!(output.len() < raw.len(), "expected pytest output to shrink");
         assert!(output.ends_with("\n\nExit code: 1"));
+    }
+
+    #[test]
+    fn minimizer_footer_survives_max_output_truncation() {
+        // `cat` of a source file whose Default-level outline (head/tail
+        // fallback: no imports, no top-level declarations) still exceeds
+        // MAX_OUTPUT_LEN. The `[output minimized via …]` marker must be
+        // appended after the 30k truncation, never swallowed by it.
+        let mut raw = String::new();
+        for _ in 0..200 {
+            raw.push_str("    ");
+            raw.push_str(&"x".repeat(400));
+            raw.push('\n');
+        }
+        assert!(raw.len() > MAX_OUTPUT_LEN);
+        let output = format_command_output_with(
+            "cat big.rs",
+            raw,
+            None,
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(
+            output.contains("... (output truncated)"),
+            "body must be truncated: len={}",
+            output.len()
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "minimizer marker must survive truncation: tail={:?}",
+            &output[output.len().saturating_sub(200)..]
+        );
+        assert!(
+            output.ends_with(" bytes]"),
+            "marker must appear intact at the tail"
+        );
+        let truncated_end = output.find("... (output truncated)").expect("truncation marker");
+        let footer_start = output.find("[output minimized via").expect("footer");
+        assert!(
+            footer_start > truncated_end,
+            "footer must come after truncation marker"
+        );
     }
 
     #[cfg(windows)]
