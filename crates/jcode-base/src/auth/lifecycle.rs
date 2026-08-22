@@ -874,6 +874,7 @@ fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
         "copilot" => Some("copilot"),
         "gemini" => Some("gemini"),
         "antigravity" => Some("antigravity"),
+        "xai-oauth" | "supergrok" => Some("xai-oauth"),
         _ => None,
     }
 }
@@ -1127,6 +1128,7 @@ fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
         "gemini" => (RuntimeProviderId::Gemini, ActiveProvider::Gemini),
         "antigravity" => (RuntimeProviderId::Antigravity, ActiveProvider::Antigravity),
         "grok-build" => (RuntimeProviderId::GrokBuild, ActiveProvider::OpenRouter),
+        "xai-oauth" => (RuntimeProviderId::XaiOauth, ActiveProvider::OpenRouter),
         _ => return None,
     };
     Some(ProviderActivation::initial(runtime_id, active))
@@ -1157,6 +1159,7 @@ pub fn model_switch_request_for_provider_id(
         Some("copilot") => format!("copilot:{}", model),
         Some("gemini") => format!("gemini:{}", model),
         Some("antigravity") => format!("antigravity:{}", model),
+        Some("xai-oauth") => format!("xai-oauth:{}", model),
         _ => model.to_string(),
     }
 }
@@ -1488,6 +1491,9 @@ mod tests {
                 }
                 crate::provider_catalog::LoginProviderTarget::Antigravity => {
                     Some(("antigravity", "antigravity", "antigravity", "antigravity"))
+                }
+                crate::provider_catalog::LoginProviderTarget::XaiOauth => {
+                    Some(("xai-oauth", "xai-oauth", "openrouter", "xai-oauth"))
                 }
                 _ => None,
             }) else {
