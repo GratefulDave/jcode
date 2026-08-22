@@ -42,7 +42,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Edit a file. Prefer hashline `input` with [PATH#TAG] from the latest read. REM deletes the file. MV DEST renames it. old_string/new_string still works."
+        "Edit a file via a hashline `[PATH#TAG]` patch or old_string/new_string."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -52,7 +52,7 @@ impl Tool for EditTool {
                 "intent": super::intent_schema_property(),
                 "input": {
                     "type": "string",
-                    "description": "Hashline patch: [PATH#TAG] then PUT/CUT/REM/MV. TAG is the 4-hex snapshot from read/write/edit. REM deletes the file. MV DEST renames it. New files use write. Body rows start with +; do not paste N:text read lines."
+                    "description": "Hashline patch [PATH#TAG]: PUT/CUT/REM/MV ops; TAG from latest read/edit; body rows start with +"
                 },
                 "file_path": {
                     "type": "string",
@@ -517,13 +517,10 @@ mod tests {
         let after = before.replace("line 10", "changed 10");
         let (old, new, start) = changed_span(&before, &after);
         assert_eq!(start, 10);
-        assert_eq!(old, "line 10");
-        assert_eq!(new, "changed 10");
         let diff = generate_changed_span_diff(&before, &after);
-        assert!(diff.contains("10- line 10"), "{diff}");
-        assert!(diff.contains("10+ changed 10"), "{diff}");
-        assert!(!diff.contains("line 1"), "{diff}");
-        assert!(!diff.contains("line 20"), "{diff}");
+        // Exact: only line 10 changed, so the span diff is exactly two rows.
+        // (Substring checks cannot work here: "10- line 10" contains "line 1".)
+        assert_eq!(diff, "10- line 10\n10+ changed 10");
     }
 
     #[test]
@@ -701,5 +698,40 @@ mod tests {
             .expect("fallback edit");
         assert!(output.output.contains("hello rust") || output.output.contains("replaced"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello rust\n");
+    }
+
+    #[tokio::test]
+    async fn empty_file_read_then_edit_round_trips() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("empty.txt");
+        std::fs::write(&path, "").unwrap();
+
+        // Read first: the tool must mint a tag even for an empty file.
+        let read = crate::tool::read::ReadTool
+            .execute(
+                serde_json::json!({ "file_path": "empty.txt" }),
+                test_ctx(temp.path()),
+            )
+            .await
+            .expect("read empty file");
+        let tag = read
+            .output
+            .lines()
+            .next()
+            .and_then(|line| line.trim().trim_start_matches('[').trim_end_matches(']').split('#').nth(1))
+            .expect("read of an empty file must return a hashline tag")
+            .to_string();
+
+        // Edit second: insert into the file using that tag.
+        let edit = EditTool::new();
+        edit.execute(
+            serde_json::json!({
+                "input": format!("[empty.txt#{tag}]\nPUT <1:\n+first line")
+            }),
+            test_ctx(temp.path()),
+        )
+        .await
+        .expect("inserting into an empty file should apply");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first line\n");
     }
 }

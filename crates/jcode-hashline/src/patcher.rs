@@ -119,6 +119,28 @@ fn prepare(
     if let Ok(canonical) = path.canonicalize() {
         path = canonical;
     }
+    // `resolve_existing` passes absolute paths through unchanged, so REM/MV
+    // can name any path on disk. Apply the same catastrophic-tier deny the
+    // apply_patch DeleteFile gate uses before touching anything (#604 class).
+    let risk_ctx = jcode_command_risk::RiskContext::from_env(Some(cwd.to_path_buf()));
+    if matches!(
+        parsed.file_op,
+        Some(FileOp::Rem) | Some(FileOp::Move { .. })
+    ) && jcode_command_risk::is_catastrophic_target(&path, &risk_ctx)
+    {
+        return Err(PatchError::Message(format!(
+            "refused, this path is protected and must never be deleted by an agent: {}",
+            section.path
+        )));
+    }
+    if let Some(FileOp::Move { dest }) = &parsed.file_op {
+        let dest_path = resolve_existing(cwd, dest);
+        if jcode_command_risk::is_catastrophic_target(&dest_path, &risk_ctx) {
+            return Err(PatchError::Message(format!(
+                "refused, this path is protected and must never be overwritten by an agent: {dest}"
+            )));
+        }
+    }
     let raw = std::fs::read_to_string(&path)?;
     let (bom, text) = strip_bom(&raw);
     let bom = bom.to_string();
@@ -276,11 +298,13 @@ fn assert_seen_lines(
         }
         let text = source[*line - 1];
         if text.len() > SEEN_LINE_REVEAL_MAX_COLUMNS {
-            revealed.push(format!(
-                "{}:{}…",
-                line,
-                &text[..SEEN_LINE_REVEAL_MAX_COLUMNS]
-            ));
+            // Byte columns: back off to the nearest char boundary so a
+            // multibyte line cannot panic on slice.
+            let mut cut = SEEN_LINE_REVEAL_MAX_COLUMNS;
+            while cut > 0 && !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            revealed.push(format!("{}:{}…", line, &text[..cut]));
             column_truncated = true;
         } else {
             revealed.push(format!("{line}:{text}"));
@@ -526,4 +550,132 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "keep\n");
     }
 
+    /// `HOME` is process-global: the two catastrophic-path tests serialize on
+    /// this lock and restore the previous value before releasing it.
+    static HOME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    #[test]
+    fn rem_refuses_home_directory() {
+        let _guard = HOME_LOCK.lock();
+        let dir = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        // Canonicalize first: on macOS /var/... resolves to /private/var/...
+        // and prepare compares the canonical file path against $HOME.
+        let canon = dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("HOME", &canon) };
+        let home = canon.to_string_lossy().into_owned();
+        let mut store = SnapshotStore::new();
+        let key = dir.path().to_string_lossy().into_owned();
+        let tag = store.record(&key, "x", None::<[usize; 0]>);
+        let input = format!("[{home}#{tag}]\nREM");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        let err = apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true)
+            .unwrap_err()
+            .to_string();
+        match prev_home {
+            Some(prev) => unsafe { std::env::set_var("HOME", prev) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(dir.path().exists(), "home must survive a REM attempt");
+        assert!(err.contains("protected"), "{err}");
+    }
+
+    #[test]
+    fn mv_refuses_protected_destination() {
+        let _guard = HOME_LOCK.lock();
+        let dir = tempfile::tempdir().unwrap();
+        let home_temp = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        // Canonicalize first: on macOS /var/... resolves to /private/var/...
+        let home = home_temp.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("HOME", &home) };
+        let (file, mut store, tag) = record_file(dir.path(), "src.txt", "keep\n");
+        let dest = home.to_string_lossy().into_owned();
+        let input = format!("[src.txt#{tag}]\nMV {dest}");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        let err = apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true)
+            .unwrap_err()
+            .to_string();
+        match prev_home {
+            Some(prev) => unsafe { std::env::set_var("HOME", prev) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(home.exists(), "protected destination must survive");
+        assert!(file.exists(), "source must survive a refused move");
+        assert!(err.contains("protected"), "{err}");
+    }
+
+    #[test]
+    fn seen_line_reveal_handles_multibyte_lines() {
+        // A multibyte line longer than the 512-byte reveal cap used to panic
+        // on a non-char-boundary byte slice.
+        let dir = tempfile::tempdir().unwrap();
+        let long_line = "\u{5b57}".repeat(300); // 900 bytes of CJK
+        let text = format!("head\n{long_line}\n");
+        let file = dir.path().join("cjk.txt");
+        std::fs::write(&file, &text).unwrap();
+        let mut store = SnapshotStore::new();
+        let key = file.canonicalize().unwrap().to_string_lossy().into_owned();
+        let tag = store.record(&key, &text, Some([1]));
+        let input = format!("[cjk.txt#{tag}]\nPUT 2.=2:\n+replaced");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        let err = apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("touches lines not shown"), "{err}");
+        assert!(err.contains("\n2:"), "reveal must include the long line: {err}");
+    }
+
+    #[test]
+    fn unseen_anchor_rejected_then_reveal_merge_retry_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "alpha\nbeta\ngamma\n";
+        let (file, mut store, tag) = {
+            let f = dir.path().join("note.txt");
+            std::fs::write(&f, text).unwrap();
+            let mut s = SnapshotStore::new();
+            let k = f.canonicalize().unwrap().to_string_lossy().into_owned();
+            let t = s.record(&k, text, Some([1]));
+            (f, s, t)
+        };
+        let input = format!("[note.txt#{tag}]\nPUT 3.=3:\n+GAMMA");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        let err = apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("touches lines not shown"), "{err}");
+        assert!(err.contains("3:gamma"), "unseen line is revealed: {err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+        // The rejection revealed the unseen line back into the snapshot's
+        // seen-lines set, so an identical retry applies.
+        apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true).unwrap();
+        assert!(
+            std::fs::read_to_string(&file).unwrap().contains("GAMMA"),
+            "retry after reveal-merge should apply"
+        );
+    }
+
+    #[test]
+    fn crlf_and_bom_survive_a_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = "\u{FEFF}first\r\nsecond\r\n";
+        let file = dir.path().join("doc.txt");
+        std::fs::write(&file, raw).unwrap();
+        let mut store = SnapshotStore::new();
+        let key = file.canonicalize().unwrap().to_string_lossy().into_owned();
+        let tag = store.record(&key, "first\nsecond\n", Some([1, 2]));
+        let input = format!("[doc.txt#{tag}]\nPUT 2.=2:\n+SECOND");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "\u{FEFF}first\r\nSECOND\r\n"
+        );
+    }
 }

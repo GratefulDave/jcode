@@ -1042,14 +1042,13 @@ pub fn parse_input(input: &str) -> Result<Patch> {
 }
 
 pub fn collect_anchor_lines(edits: &[Edit]) -> Vec<usize> {
-    let mut lines = Vec::new();
-    for edit in edits {
-        for anchor in edit.anchors() {
-            if !lines.contains(&anchor.line) {
-                lines.push(anchor.line);
-            }
-        }
-    }
+    let mut lines: Vec<usize> = edits
+        .iter()
+        .flat_map(|edit| edit.anchors())
+        .map(|anchor| anchor.line)
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
     lines
 }
 

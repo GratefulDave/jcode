@@ -97,7 +97,7 @@ impl Edit {
                 Cursor::Bof | Cursor::Eof => vec![],
             },
             Self::Delete { anchor, .. } => vec![*anchor],
-            Self::Cut { range, .. } => vec![range.start, range.end],
+            Self::Cut { range, .. } => covered_anchors(range),
             Self::Paste { at, .. } => match at {
                 PasteTarget::Gap { cursor } => match cursor {
                     Cursor::BeforeAnchor { anchor } | Cursor::AfterAnchor { anchor } => {
@@ -105,7 +105,7 @@ impl Edit {
                     }
                     Cursor::Bof | Cursor::Eof => vec![],
                 },
-                PasteTarget::Span { range } => vec![range.start, range.end],
+                PasteTarget::Span { range } => covered_anchors(range),
             },
             Self::Block { anchor, .. } => vec![*anchor],
         }
@@ -115,6 +115,18 @@ impl Edit {
         !self.anchors().is_empty()
     }
 }
+
+/// Every line a range op covers, not just its endpoints.
+///
+/// Lex anchors every covered line: recovery must reject when an interior
+/// line drifts differently from the endpoints, and the seen-lines guard
+/// must flag edits touching interior lines the model never saw.
+fn covered_anchors(range: &ParsedRange) -> Vec<Anchor> {
+    (range.start.line..=range.end.line)
+        .map(|line| Anchor { line })
+        .collect()
+}
+
 
 #[derive(Debug, Clone, Default)]
 pub struct Clipboard {

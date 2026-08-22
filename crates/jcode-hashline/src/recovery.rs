@@ -135,14 +135,13 @@ fn remap_edit(edit: &Edit, map: &HashMap<usize, usize>) -> Option<Edit> {
 }
 
 fn collect_anchor_lines(edits: &[Edit]) -> Vec<usize> {
-    let mut lines = Vec::new();
-    for edit in edits {
-        for anchor in edit.anchors() {
-            if !lines.contains(&anchor.line) {
-                lines.push(anchor.line);
-            }
-        }
-    }
+    let mut lines: Vec<usize> = edits
+        .iter()
+        .flat_map(|edit| edit.anchors())
+        .map(|anchor| anchor.line)
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
     lines
 }
 
@@ -241,4 +240,47 @@ pub fn try_recover(
         format!("stale tag {file_hash}: remapped anchors from a prior in-session edit")
     };
     Some(RecoveryResult { apply, warning })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::parse_patch;
+    use crate::snapshots::SnapshotStore;
+
+    fn store_with(key: &str, text: &str) -> (SnapshotStore, String) {
+        let mut store = SnapshotStore::new();
+        let tag = store.record(key, text, None::<[usize; 0]>);
+        (store, tag)
+    }
+
+    #[test]
+    fn recovers_uniform_offset_drift() {
+        let prev = "alpha\nbeta\ngamma\n";
+        let (store, tag) = store_with("/recovers.rs", prev);
+        // One line inserted at the head outside this session: every old line
+        // remaps with the same +1 offset.
+        let current = format!("header\n{prev}");
+        let edits = parse_patch("PUT 2.=2:\n+BETA").unwrap().edits;
+        let mut clip = Clipboard::default();
+        let recovered = try_recover(&store, "/recovers.rs", &current, &tag, &edits, &mut clip)
+            .expect("uniform drift should recover");
+        assert_eq!(recovered.apply.text, "header\nalpha\nBETA\ngamma\n");
+    }
+
+    #[test]
+    fn rejects_interior_line_drift_inside_a_cut_range() {
+        let prev = "a\nb\nc\nd\ne\n";
+        let (store, tag) = store_with("/interior.rs", prev);
+        // Head insert (+1 for every endpoint) but interior line `c` was
+        // replaced, so it has no mapping. Endpoint-only anchors would see a
+        // uniform offset and wrongly recover; every covered line must anchor.
+        let current = "x\na\nb\nQ\nd\ne\n";
+        let edits = parse_patch("CUT 2.=4").unwrap().edits;
+        let mut clip = Clipboard::default();
+        assert!(
+            try_recover(&store, "/interior.rs", &current, &tag, &edits, &mut clip).is_none(),
+            "interior drift inside CUT must not recover"
+        );
+    }
 }

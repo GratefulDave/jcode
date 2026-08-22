@@ -13,6 +13,8 @@ path = "src/lib.rs"
 similar = "2"
 thiserror = "2"
 xxhash-rust = { version = "0.8", features = ["xxh32"] }
+jcode-command-risk = { path = "../jcode-command-risk" }
 
 [dev-dependencies]
 tempfile = "3"
+parking_lot = "0.12"

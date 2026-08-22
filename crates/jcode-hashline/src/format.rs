@@ -60,26 +60,22 @@ pub fn parse_hashline_header(line: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     let inner = &trimmed[1..trimmed.len() - 1];
-    if let Some(hash_at) = inner.rfind(HL_FILE_HASH_SEP) {
-        let path = inner[..hash_at].trim();
-        let tag = inner[hash_at + 1..].trim();
-        if path.is_empty() {
-            return None;
-        }
-        if tag.len() == HL_FILE_HASH_LENGTH
-            && tag.bytes().all(|b| b.is_ascii_hexdigit())
-        {
-            return Some((path.to_string(), Some(tag.to_ascii_uppercase())));
-        }
-        if tag.is_empty() {
-            return Some((path.to_string(), None));
-        }
+    // A copied header always carries the `#TAG` separator. Bracketed lines
+    // without one (`[display]` TOML section headers) are content, not headers;
+    // matching them here made write strip the first line of such files.
+    let hash_at = inner.rfind(HL_FILE_HASH_SEP)?;
+    let path = inner[..hash_at].trim();
+    let tag = inner[hash_at + 1..].trim();
+    if path.is_empty() {
+        return None;
     }
-    if inner.is_empty() {
-        None
-    } else {
-        Some((inner.to_string(), None))
+    if tag.len() == HL_FILE_HASH_LENGTH && tag.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some((path.to_string(), Some(tag.to_ascii_uppercase())));
     }
+    if tag.is_empty() {
+        return Some((path.to_string(), None));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -107,5 +103,20 @@ mod tests {
         assert_eq!(split_addressable_file_lines("a\nb\n"), ["a", "b"]);
         assert_eq!(split_addressable_file_lines("a\nb\n\n"), ["a", "b", ""]);
         assert_eq!(format_numbered_lines("a\n\nb\n", 1), "1:a\n2:\n3:b\n4:");
+    }
+
+    #[test]
+    fn bracketed_line_without_tag_is_not_a_header() {
+        // TOML section headers and other bracketed content lines must not be
+        // mistaken for copied `[PATH#TAG]` headers (write would strip them).
+        assert_eq!(parse_hashline_header("[display]"), None);
+        assert_eq!(parse_hashline_header("[gateway]"), None);
+        assert_eq!(parse_hashline_header("some [bracketed] text"), None);
+        assert_eq!(
+            parse_hashline_header("[path#1A2B]"),
+            Some(("path".into(), Some("1A2B".into())))
+        );
+        // Malformed tags are content, not headers.
+        assert_eq!(parse_hashline_header("[path#ZZZZ]"), None);
     }
 }

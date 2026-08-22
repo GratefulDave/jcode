@@ -3751,6 +3751,8 @@ dependencies = [
 name = "jcode-hashline"
 version = "0.1.0"
 dependencies = [
+ "jcode-command-risk",
+ "parking_lot",
  "similar",
  "tempfile",
  "thiserror 2.0.19",
