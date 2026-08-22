@@ -708,10 +708,29 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
 
 #[path = "bash_minimizer.rs"]
 mod bash_minimizer;
-use bash_minimizer::minimize_command_output;
+use bash_minimizer::{minimize_command_output, minimize_with};
 
-fn format_command_output(command: &str, mut output: String, exit_code: Option<i32>) -> String {
-    output = minimize_command_output(command, output, exit_code);
+fn format_command_output(command: &str, output: String, exit_code: Option<i32>) -> String {
+    format_minimized_command_output(
+        minimize_command_output(command, output, exit_code),
+        exit_code,
+    )
+}
+
+#[cfg(test)]
+fn format_command_output_with(
+    command: &str,
+    output: String,
+    exit_code: Option<i32>,
+    options: &jcode_shell_minimizer::MinimizerOptions,
+) -> String {
+    format_minimized_command_output(
+        minimize_with(command, output, exit_code, options),
+        exit_code,
+    )
+}
+
+fn format_minimized_command_output(mut output: String, exit_code: Option<i32>) -> String {
     if output.len() > MAX_OUTPUT_LEN {
         output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
         output.push_str("\n... (output truncated)");
@@ -732,7 +751,8 @@ fn format_command_output(command: &str, mut output: String, exit_code: Option<i3
 mod utf8_truncation_tests {
     #[cfg(any(windows, unix))]
     use super::build_shell_command;
-    use super::format_command_output;
+    use super::{format_command_output, format_command_output_with};
+    use jcode_shell_minimizer::MinimizerOptions;
 
     #[test]
     fn format_command_output_truncates_on_utf8_boundary() {
@@ -749,7 +769,15 @@ mod utf8_truncation_tests {
             raw.push_str(&format!(" M src/file_{i}.rs\n"));
         }
         assert!(raw.chars().count() >= 1000);
-        let output = format_command_output("git status", raw.clone(), Some(0));
+        let output = format_command_output_with(
+            "git status",
+            raw.clone(),
+            Some(0),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
         assert!(
             output.len() < raw.len(),
             "expected git status to shrink: raw={} out={}",
@@ -760,6 +788,131 @@ mod utf8_truncation_tests {
             output.contains("[output minimized via"),
             "expected minimizer footer: {output}"
         );
+        assert!(
+            output.contains("src/file_0.rs"),
+            "first path must survive: {output}"
+        );
+        assert!(
+            output.contains("src/file_39.rs"),
+            "last kept path must survive: {output}"
+        );
+        assert!(
+            !output.contains("src/file_199.rs"),
+            "elided path must not survive: {output}"
+        );
+        assert!(
+            output.contains("[…160 paths elided…]"),
+            "expected path elision marker: {output}"
+        );
+    }
+
+    #[test]
+    fn format_command_output_with_disabled_minimizer_preserves_git_status_raw_output() {
+        let mut raw = String::from("## main...origin/main\n");
+        for i in 0..200 {
+            raw.push_str(&format!(" M src/file_{i}.rs\n"));
+        }
+        let output = format_command_output_with(
+            "git status",
+            raw.clone(),
+            Some(0),
+            &MinimizerOptions {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        assert_eq!(output, raw);
+        assert!(!output.contains("[output minimized via"));
+    }
+
+    #[test]
+    fn format_command_output_with_minimizes_failing_cargo_test_output() {
+        let mut raw = String::new();
+        for i in 0..100 {
+            raw.push_str(&format!("   Compiling dependency_{i} v0.1.0\n"));
+            raw.push_str(&format!("test ok_{i} ... ok\n"));
+        }
+        raw.push_str(
+            "test bad_parse ... FAILED\n\n\
+             ---- bad_parse stdout ----\n\
+             thread 'bad_parse' panicked at src/lib.rs:42:5\n\n\
+             failures:\n\
+                 bad_parse\n\n\
+             test result: FAILED. 100 passed; 1 failed; 0 ignored\n",
+        );
+        assert!(raw.chars().count() >= 1000);
+
+        let output = format_command_output_with(
+            "cargo test",
+            raw.clone(),
+            Some(101),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+
+        assert!(
+            output.contains("bad_parse"),
+            "failure must survive: {output}"
+        );
+        assert!(
+            output.contains("test result: FAILED"),
+            "failure summary must survive: {output}"
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "expected minimizer footer: {output}"
+        );
+        assert!(
+            !output.contains("test ok_0"),
+            "passing test must be removed: {output}"
+        );
+        assert!(output.len() < raw.len(), "expected cargo output to shrink");
+        assert!(output.ends_with("\n\nExit code: 101"));
+    }
+
+    #[test]
+    fn format_command_output_with_minimizes_failing_pytest_output() {
+        let mut raw = String::from(
+            "============================= test session starts =============================\n\
+             collected 101 items\n\n",
+        );
+        for i in 0..100 {
+            raw.push_str(&format!("tests/test_math.py::test_ok_{i} PASSED\n"));
+            raw.push_str("................................................................................\n");
+        }
+        raw.push_str(
+            "\n=================================== FAILURES ===================================\n\
+             FAILED tests/test_math.py::test_adds_badly - assert 1 + 1 == 3\n\
+             ===================== 1 failed, 100 passed in 0.02s =====================\n",
+        );
+        assert!(raw.chars().count() >= 1000);
+
+        let output = format_command_output_with(
+            "pytest",
+            raw.clone(),
+            Some(1),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+
+        assert!(
+            output.contains("FAILED tests/test_math.py::test_adds_badly"),
+            "failure summary must survive: {output}"
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "expected minimizer footer: {output}"
+        );
+        assert!(
+            !output.contains("collected 101 items"),
+            "header must be removed: {output}"
+        );
+        assert!(output.len() < raw.len(), "expected pytest output to shrink");
+        assert!(output.ends_with("\n\nExit code: 1"));
     }
 
     #[cfg(windows)]

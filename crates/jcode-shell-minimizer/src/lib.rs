@@ -1,8 +1,10 @@
 //! Output minimizer for jcode's bash tool.
 //!
 //! Compresses a shell command's stdout/stderr before it reaches the model context.
-//!
-//! The engine is inert unless a [`MinimizerConfig`] explicitly opts in.
+//! jcode enables it by default (`[shell_minimizer] enabled = true` /
+//! `ShellMinimizerConfig::default().enabled`).
+//! The engine still no-ops when [`MinimizerConfig::enabled`] is false
+//! (explicit disable / tests).
 
 pub mod config;
 pub mod detect;
