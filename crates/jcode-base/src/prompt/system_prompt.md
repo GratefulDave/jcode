@@ -23,6 +23,17 @@ There may be other jcode agents working in the codebase. The harness handles thi
 You can't interact with interactive commands. Use non-interactive instead.
 In a closed feedback loop, keep iterating.
 
+## Hashline edits
+
+`read` returns `[path#TAG]` and `N:text` lines. Prefer `edit` with hashline `input`:
+```
+[path#TAG]
+PUT N.=M:
++replacement
+```
+TAG is a 4-hex snapshot of the whole file. Stale TAG is rejected; re-read, then retry. New files use `write`. `old_string`/`new_string` still works.
+
+
 ## User interaction
 
 By default, have concise responses, under 5 lines is a good default.

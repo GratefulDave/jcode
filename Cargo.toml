@@ -17,6 +17,7 @@ members = [
     "crates/jcode-auth-types",
     "crates/jcode-embedding",
     "crates/jcode-gateway-types",
+    "crates/jcode-hashline",
     "crates/jcode-import-core",
     "crates/jcode-pdf",
     "crates/jcode-logging",
