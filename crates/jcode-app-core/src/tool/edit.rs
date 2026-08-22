@@ -42,7 +42,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Edit a file. Prefer hashline `input` with [PATH#TAG] from the latest read. old_string/new_string still works."
+        "Edit a file. Prefer hashline `input` with [PATH#TAG] from the latest read. REM deletes the file. MV DEST renames it. old_string/new_string still works."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -52,7 +52,7 @@ impl Tool for EditTool {
                 "intent": super::intent_schema_property(),
                 "input": {
                     "type": "string",
-                    "description": "Hashline patch: [PATH#TAG] then PUT/CUT/REM/MV. TAG is the 4-hex snapshot from read/write/edit. New files use write."
+                    "description": "Hashline patch: [PATH#TAG] then PUT/CUT/REM/MV. TAG is the 4-hex snapshot from read/write/edit. REM deletes the file. MV DEST renames it. New files use write. Body rows start with +; do not paste N:text read lines."
                 },
                 "file_path": {
                     "type": "string",
@@ -197,6 +197,7 @@ fn execute_hashline(
         .clone()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| Path::new(".").to_path_buf());
+    let config_watch = super::config_edit_notice::ConfigEditWatch::begin();
     let results = jcode_hashline::with_session(&ctx.session_id, |store, clipboard| {
         jcode_hashline::apply_patch_to_disk(&patch, store, clipboard, &cwd, true)
     })
@@ -227,7 +228,7 @@ fn execute_hashline(
             if let Some(line) = result.first_changed_line {
                 body.push_str(&format!("first changed line {line}\n"));
             }
-            let preview = generate_diff(&result.before, &result.after, 1);
+            let preview = generate_changed_span_diff(&result.before, &result.after);
             if !preview.is_empty() {
                 body.push_str(&preview);
                 if !preview.ends_with('\n') {
@@ -259,6 +260,7 @@ fn execute_hashline(
             detail: None,
         }));
     }
+    config_watch.finish(&mut body);
     let mut output = ToolOutput::new(body);
     if let Some(title) = title {
         output = output.with_title(title);
@@ -320,6 +322,42 @@ fn generate_diff(old: &str, new: &str, start_line: usize) -> String {
         output.trim_end().to_string()
     }
 }
+
+const HASHLINE_DIFF_MAX_LINES: usize = 30;
+
+fn changed_span(before: &str, after: &str) -> (String, String, usize) {
+    let old: Vec<&str> = before.lines().collect();
+    let new: Vec<&str> = after.lines().collect();
+    let mut start = 0;
+    while start < old.len() && start < new.len() && old[start] == new[start] {
+        start += 1;
+    }
+    let mut old_end = old.len();
+    let mut new_end = new.len();
+    while old_end > start && new_end > start && old[old_end - 1] == new[new_end - 1] {
+        old_end -= 1;
+        new_end -= 1;
+    }
+    (
+        old[start..old_end].join("\n"),
+        new[start..new_end].join("\n"),
+        start + 1,
+    )
+}
+
+fn generate_changed_span_diff(before: &str, after: &str) -> String {
+    let (old, new, start) = changed_span(before, after);
+    let diff = generate_diff(&old, &new, start);
+    let mut lines: Vec<&str> = diff.lines().collect();
+    if lines.len() <= HASHLINE_DIFF_MAX_LINES {
+        return diff;
+    }
+    lines.truncate(HASHLINE_DIFF_MAX_LINES);
+    let mut out = lines.join("\n");
+    out.push_str("\n...");
+    out
+}
+
 
 fn build_file_touch_preview(diff: &str) -> Option<String> {
     let trimmed = diff.trim();
@@ -469,6 +507,41 @@ mod tests {
 
         assert!(diff.is_empty(), "No changes should produce empty diff");
     }
+
+    #[test]
+    fn test_changed_span_skips_unchanged_head() {
+        let before = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let after = before.replace("line 10", "changed 10");
+        let (old, new, start) = changed_span(&before, &after);
+        assert_eq!(start, 10);
+        assert_eq!(old, "line 10");
+        assert_eq!(new, "changed 10");
+        let diff = generate_changed_span_diff(&before, &after);
+        assert!(diff.contains("10- line 10"), "{diff}");
+        assert!(diff.contains("10+ changed 10"), "{diff}");
+        assert!(!diff.contains("line 1"), "{diff}");
+        assert!(!diff.contains("line 20"), "{diff}");
+    }
+
+    #[test]
+    fn test_changed_span_diff_caps() {
+        let before = (1..=80)
+            .map(|i| format!("old {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let after = (1..=80)
+            .map(|i| format!("new {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let diff = generate_changed_span_diff(&before, &after);
+        let lines = diff.lines().count();
+        assert!(lines <= HASHLINE_DIFF_MAX_LINES + 1, "{lines} {diff}");
+        assert!(diff.contains("..."), "{diff}");
+    }
+
 
     #[test]
     fn test_generate_diff_line_number_format() {

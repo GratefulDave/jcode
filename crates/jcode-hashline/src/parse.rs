@@ -513,6 +513,7 @@ impl Executor {
             return Ok(());
         };
         resolve_minus_rows(&mut pending.payloads)?;
+        reject_copied_read_rows(&pending.payloads)?;
         strip_bare_prefixes_if_uniform(&mut pending.payloads);
         let payloads = pending.payloads;
         let line_num = pending.line_num;
@@ -913,6 +914,25 @@ fn resolve_minus_rows(payloads: &mut Vec<PayloadRow>) -> Result<()> {
     )))
 }
 
+fn looks_like_read_line(text: &str) -> bool {
+    let digits = text.bytes().take_while(|b| b.is_ascii_digit()).count();
+    digits > 0 && text.as_bytes().get(digits) == Some(&b':')
+}
+
+fn reject_copied_read_rows(payloads: &[PayloadRow]) -> Result<()> {
+    if let Some(row) = payloads
+        .iter()
+        .find(|row| row.bare && looks_like_read_line(&row.text))
+    {
+        return Err(ParseError::Message(format!(
+            "line {}: body row looks like a copied read line (`N:text`). Prefix with `+` if that text is the replacement.",
+            row.line_num
+        )));
+    }
+    Ok(())
+}
+
+
 fn strip_bare_prefixes_if_uniform(payloads: &mut [PayloadRow]) {
     let mut saw_bare = false;
     let mut all_literal = true;
@@ -1098,10 +1118,13 @@ mod tests {
     #[test]
     fn auto_pipes_bare_rows() {
         assert_eq!(apply_patch("a\nb\nc", "PUT 2-2:\nraw"), "a\nraw\nc");
-        let parsed = parse_patch("PUT 2-2:\n3:replaced").unwrap();
+        let err = parse_patch("PUT 2-2:\n3:replaced")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("copied read line"), "{err}");
         assert_eq!(
-            apply_edits("a\nb\nc", &parsed.edits, None).unwrap().text,
-            "a\nreplaced\nc"
+            apply_patch("a\nb\nc", "PUT 2-2:\n+3:replaced"),
+            "a\n3:replaced\nc"
         );
     }
 

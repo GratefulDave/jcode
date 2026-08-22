@@ -473,8 +473,8 @@ pub fn format_tools(tools: &[ToolDefinition], is_oauth: bool, cache_ttl_1h: bool
                 &["edit"],
                 ApiTool {
                     name: "Edit".to_string(),
-                    description: "Edit a file. Prefer hashline input with [PATH#TAG] from the latest read. old_string/new_string still works.".to_string(),
-                    input_schema: json!({"type":"object","properties":{"input":{"type":"string","description":"Hashline patch: [PATH#TAG] then PUT/CUT/REM/MV."},"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"additionalProperties":false}),
+                    description: "Edit a file. Prefer hashline input with [PATH#TAG] from the latest read. REM deletes the file. MV DEST renames it. old_string/new_string still works.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"input":{"type":"string","description":"Hashline patch: [PATH#TAG] then PUT/CUT/REM/MV. REM deletes. MV DEST renames. Body rows start with +."},"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"additionalProperties":false}),
                     cache_control: None,
                 },
             ),

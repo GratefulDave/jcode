@@ -475,4 +475,55 @@ mod tests {
             .to_string();
         assert!(err.contains("stale"), "{err}");
     }
+
+    fn record_file(dir: &std::path::Path, name: &str, text: &str) -> (std::path::PathBuf, SnapshotStore, String) {
+        let file = dir.join(name);
+        std::fs::write(&file, text).unwrap();
+        let mut store = SnapshotStore::new();
+        let key = file.canonicalize().unwrap().to_string_lossy().into_owned();
+        let tag = store.record(&key, text, None::<[usize; 0]>);
+        (file, store, tag)
+    }
+
+    #[test]
+    fn put_star_replaces_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "fn greet() {\n    println!(\"a\");\n}\nfn other() {}\n";
+        let (file, mut store, tag) = record_file(dir.path(), "greet.rs", text);
+        let input = format!("[greet.rs#{tag}]\nPUT 1*:\n+fn greet() {{\n+    println!(\"b\");\n+}}");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true).unwrap();
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert!(after.contains("println!(\"b\")"), "{after}");
+        assert!(after.contains("fn other()"), "{after}");
+        assert!(!after.contains("println!(\"a\")"), "{after}");
+    }
+
+    #[test]
+    fn rem_deletes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, mut store, tag) = record_file(dir.path(), "gone.txt", "bye\n");
+        let input = format!("[gone.txt#{tag}]\nREM");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        let results = apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true).unwrap();
+        assert_eq!(results[0].op, "delete");
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn mv_renames_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, mut store, tag) = record_file(dir.path(), "src.txt", "keep\n");
+        let dest = dir.path().join("dest.txt");
+        let input = format!("[src.txt#{tag}]\nMV dest.txt");
+        let patch = parse_input(&input).unwrap();
+        let mut clip = Clipboard::default();
+        let results = apply_patch_to_disk(&patch, &mut store, &mut clip, dir.path(), true).unwrap();
+        assert_eq!(results[0].move_dest.as_deref(), Some("dest.txt"));
+        assert!(!file.exists());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "keep\n");
+    }
+
 }

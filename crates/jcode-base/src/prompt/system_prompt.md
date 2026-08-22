@@ -32,6 +32,8 @@ PUT N.=M:
 +replacement
 ```
 TAG is a 4-hex snapshot of the whole file. Stale TAG is rejected; re-read, then retry. New files use `write`. `old_string`/`new_string` still works.
+`REM` deletes the section file. `MV DEST` renames it. Both write the filesystem directly; hesitate on those like any other delete/rename.
+Body rows are final content and start with `+`. Do not paste `N:text` read lines as the replacement.
 
 
 ## User interaction

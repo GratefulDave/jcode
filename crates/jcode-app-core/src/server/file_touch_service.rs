@@ -97,6 +97,7 @@ impl FileTouchService {
     /// paths the session actually touched, falling back to a full scan if the
     /// reverse entry is missing.
     pub(crate) async fn clear_session(&self, session_id: &str) {
+        jcode_hashline::clear_session(session_id);
         let touched_paths = {
             let mut reverse = self.by_session.write().await;
             reverse.remove(session_id)

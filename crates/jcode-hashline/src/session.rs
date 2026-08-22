@@ -45,3 +45,23 @@ pub fn clear_session(session_id: &str) {
         map.remove(session_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_session_drops_snapshots() {
+        let id = "clear-session-test";
+        let tag = crate::record_snapshot(id, "/tmp/hashline-clear.txt", "hello\n", None::<[usize; 0]>)
+            .expect("tag");
+        assert!(!tag.is_empty());
+        with_session(id, |store, _| {
+            assert!(store.head("/tmp/hashline-clear.txt").is_some());
+        });
+        clear_session(id);
+        with_session(id, |store, _| {
+            assert!(store.head("/tmp/hashline-clear.txt").is_none());
+        });
+    }
+}

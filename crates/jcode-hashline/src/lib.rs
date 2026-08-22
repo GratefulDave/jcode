@@ -106,7 +106,7 @@ PUT N*: replace the syntactic block beginning on line N.
 PUT <N: insert before line N (PUT <1: = file head).
 PUT >N: insert after line N. PUT >$: file tail.
 CUT N.=M / CUT N*: delete and capture. REM deletes the file. MV DEST moves it.
-Body rows are final content and start with +. Markdown bullet: +- item.
+Body rows are final content and start with +. Markdown bullet: +- item. Do not paste N:text read lines as body.
 
 Numbers and TAG are from the latest read. Each edit remints TAG. Stale tag: stop and re-read.
 "#;
