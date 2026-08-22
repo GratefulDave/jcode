@@ -706,10 +706,47 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
     cmd
 }
 
-fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
+#[path = "bash_minimizer.rs"]
+mod bash_minimizer;
+use bash_minimizer::{minimize_command_output, minimize_with};
+
+fn format_command_output(command: &str, output: String, exit_code: Option<i32>) -> String {
+    format_minimized_command_output(
+        minimize_command_output(command, output, exit_code),
+        exit_code,
+    )
+}
+
+#[cfg(test)]
+fn format_command_output_with(
+    command: &str,
+    output: String,
+    exit_code: Option<i32>,
+    options: &jcode_shell_minimizer::MinimizerOptions,
+) -> String {
+    format_minimized_command_output(
+        minimize_with(command, output, exit_code, options),
+        exit_code,
+    )
+}
+
+fn format_minimized_command_output(
+    minimized: bash_minimizer::MinimizedOutput,
+    exit_code: Option<i32>,
+) -> String {
+    let mut output = minimized.text;
     if output.len() > MAX_OUTPUT_LEN {
         output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
         output.push_str("\n... (output truncated)");
+    }
+
+    // Append the minimizer marker after truncation so it survives the
+    // MAX_OUTPUT_LEN cut even when the minimized body alone exceeds it.
+    if let Some(footer) = minimized.footer {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&footer);
     }
 
     if let Some(code) = exit_code.filter(|code| *code != 0) {
@@ -727,14 +764,295 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
 mod utf8_truncation_tests {
     #[cfg(any(windows, unix))]
     use super::build_shell_command;
-    use super::format_command_output;
+    #[cfg(unix)]
+    use super::wrap_repo_cargo_commands;
+    use super::{format_command_output, format_command_output_with, MAX_OUTPUT_LEN};
+    use jcode_shell_minimizer::MinimizerOptions;
 
     #[test]
     fn format_command_output_truncates_on_utf8_boundary() {
         let input = format!("{}é", "a".repeat(29_999));
-        let output = format_command_output(input, None);
+        let output = format_command_output("echo", input, None);
         assert!(output.ends_with("\n... (output truncated)"));
         assert!(output.starts_with(&"a".repeat(29_999)));
+    }
+
+    #[test]
+    fn format_command_output_minimizes_verbose_git_status() {
+        let mut raw = String::from("## main...origin/main\n");
+        for i in 0..200 {
+            raw.push_str(&format!(" M src/file_{i}.rs\n"));
+        }
+        assert!(raw.chars().count() >= 1000);
+        let output = format_command_output_with(
+            "git status",
+            raw.clone(),
+            Some(0),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(
+            output.len() < raw.len(),
+            "expected git status to shrink: raw={} out={}",
+            raw.len(),
+            output.len()
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "expected minimizer footer: {output}"
+        );
+        assert!(
+            output.contains("src/file_0.rs"),
+            "first path must survive: {output}"
+        );
+        assert!(
+            output.contains("src/file_39.rs"),
+            "last kept path must survive: {output}"
+        );
+        assert!(
+            !output.contains("src/file_199.rs"),
+            "elided path must not survive: {output}"
+        );
+        assert!(
+            output.contains("[…160 paths elided…]"),
+            "expected path elision marker: {output}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn isolated_jcode_repo(with_cargo_wrapper: bool) -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().expect("temp repo");
+        std::fs::create_dir_all(temp.path().join(".git")).expect("git dir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"jcode\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("Cargo.toml");
+        if with_cargo_wrapper {
+            let scripts = temp.path().join("scripts");
+            std::fs::create_dir_all(&scripts).expect("scripts dir");
+            std::fs::write(scripts.join("dev_cargo.sh"), "#!/bin/sh\nexec cargo \"$@\"\n")
+                .expect("dev_cargo.sh");
+        }
+        temp
+    }
+
+    #[cfg(unix)]
+    fn verbose_git_status_output() -> String {
+        let mut raw = String::from("## main...origin/main\n");
+        for i in 0..200 {
+            raw.push_str(&format!(" M src/file_{i}.rs\n"));
+        }
+        assert!(raw.chars().count() >= 1000);
+        raw
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_wrapper_from_isolated_repo_is_compound_passthrough() {
+        let repo = isolated_jcode_repo(true);
+        let wrapped = wrap_repo_cargo_commands("git status", Some(repo.path())).expect("wrapper");
+        assert!(
+            wrapped.contains("export JCODE_DEV_CARGO_SCRIPT="),
+            "spawn blob must include cargo wrapper: {wrapped}"
+        );
+        let raw = verbose_git_status_output();
+        let options = MinimizerOptions {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let wrapped_output = format_command_output_with(&wrapped, raw.clone(), Some(0), &options);
+        assert!(
+            !wrapped_output.contains("[output minimized via"),
+            "compound wrapper must remain passthrough: {wrapped_output}"
+        );
+        let identity_output =
+            format_command_output_with("git status", raw.clone(), Some(0), &options);
+        assert!(identity_output.contains("[output minimized via"));
+        assert!(identity_output.contains("src/file_0.rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minimizer_works_from_repo_without_dev_cargo_wrapper() {
+        let repo = isolated_jcode_repo(false);
+        assert!(
+            wrap_repo_cargo_commands("git status", Some(repo.path())).is_none(),
+            "isolated repo without scripts/dev_cargo.sh must not wrap"
+        );
+        let raw = verbose_git_status_output();
+        let output = format_command_output_with(
+            "git status",
+            raw.clone(),
+            Some(0),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(
+            output.len() < raw.len(),
+            "git status should shrink without cargo wrapper: raw={} out={}",
+            raw.len(),
+            output.len()
+        );
+        assert!(output.contains("[output minimized via"));
+        assert!(output.contains("src/file_0.rs"));
+    }
+
+    #[test]
+    fn format_command_output_with_disabled_minimizer_preserves_git_status_raw_output() {
+        let mut raw = String::from("## main...origin/main\n");
+        for i in 0..200 {
+            raw.push_str(&format!(" M src/file_{i}.rs\n"));
+        }
+        let output = format_command_output_with(
+            "git status",
+            raw.clone(),
+            Some(0),
+            &MinimizerOptions {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        assert_eq!(output, raw);
+        assert!(!output.contains("[output minimized via"));
+    }
+
+    #[test]
+    fn format_command_output_with_minimizes_failing_cargo_test_output() {
+        let mut raw = String::new();
+        for i in 0..100 {
+            raw.push_str(&format!("   Compiling dependency_{i} v0.1.0\n"));
+            raw.push_str(&format!("test ok_{i} ... ok\n"));
+        }
+        raw.push_str(
+            "test bad_parse ... FAILED\n\n\
+             ---- bad_parse stdout ----\n\
+             thread 'bad_parse' panicked at src/lib.rs:42:5\n\n\
+             failures:\n\
+                 bad_parse\n\n\
+             test result: FAILED. 100 passed; 1 failed; 0 ignored\n",
+        );
+        assert!(raw.chars().count() >= 1000);
+
+        let output = format_command_output_with(
+            "cargo test",
+            raw.clone(),
+            Some(101),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+
+        assert!(
+            output.contains("bad_parse"),
+            "failure must survive: {output}"
+        );
+        assert!(
+            output.contains("test result: FAILED"),
+            "failure summary must survive: {output}"
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "expected minimizer footer: {output}"
+        );
+        assert!(
+            !output.contains("test ok_0"),
+            "passing test must be removed: {output}"
+        );
+        assert!(output.len() < raw.len(), "expected cargo output to shrink");
+        assert!(output.ends_with("\n\nExit code: 101"));
+    }
+
+    #[test]
+    fn format_command_output_with_minimizes_failing_pytest_output() {
+        let mut raw = String::from(
+            "============================= test session starts =============================\n\
+             collected 101 items\n\n",
+        );
+        for i in 0..100 {
+            raw.push_str(&format!("tests/test_math.py::test_ok_{i} PASSED\n"));
+            raw.push_str("................................................................................\n");
+        }
+        raw.push_str(
+            "\n=================================== FAILURES ===================================\n\
+             FAILED tests/test_math.py::test_adds_badly - assert 1 + 1 == 3\n\
+             ===================== 1 failed, 100 passed in 0.02s =====================\n",
+        );
+        assert!(raw.chars().count() >= 1000);
+
+        let output = format_command_output_with(
+            "pytest",
+            raw.clone(),
+            Some(1),
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+
+        assert!(
+            output.contains("FAILED tests/test_math.py::test_adds_badly"),
+            "failure summary must survive: {output}"
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "expected minimizer footer: {output}"
+        );
+        assert!(
+            !output.contains("collected 101 items"),
+            "header must be removed: {output}"
+        );
+        assert!(output.len() < raw.len(), "expected pytest output to shrink");
+        assert!(output.ends_with("\n\nExit code: 1"));
+    }
+
+    #[test]
+    fn minimizer_footer_survives_max_output_truncation() {
+        // `cat` of a source file whose Default-level outline (head/tail
+        // fallback: no imports, no top-level declarations) still exceeds
+        // MAX_OUTPUT_LEN. The `[output minimized via …]` marker must be
+        // appended after the 30k truncation, never swallowed by it.
+        let mut raw = String::new();
+        for _ in 0..200 {
+            raw.push_str("    ");
+            raw.push_str(&"x".repeat(400));
+            raw.push('\n');
+        }
+        assert!(raw.len() > MAX_OUTPUT_LEN);
+        let output = format_command_output_with(
+            "cat big.rs",
+            raw,
+            None,
+            &MinimizerOptions {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(
+            output.contains("... (output truncated)"),
+            "body must be truncated: len={}",
+            output.len()
+        );
+        assert!(
+            output.contains("[output minimized via"),
+            "minimizer marker must survive truncation: tail={:?}",
+            &output[output.len().saturating_sub(200)..]
+        );
+        assert!(
+            output.ends_with(" bytes]"),
+            "marker must appear intact at the tail"
+        );
+        let truncated_end = output.find("... (output truncated)").expect("truncation marker");
+        let footer_start = output.find("[output minimized via").expect("footer");
+        assert!(
+            footer_start > truncated_end,
+            "footer must come after truncation marker"
+        );
     }
 
     #[cfg(windows)]
@@ -861,7 +1179,7 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let mut params: BashInput = serde_json::from_value(input)?;
+        let params: BashInput = serde_json::from_value(input)?;
         let run_in_background = params.run_in_background.unwrap_or(false);
 
         // Destructive-command gate (#604), before background dispatch.
@@ -873,22 +1191,16 @@ impl Tool for BashTool {
             return Err(anyhow::anyhow!(refusal));
         }
 
-        #[cfg(unix)]
-        if let Some(wrapped) = wrap_repo_cargo_commands(&params.command, ctx.working_dir.as_deref())
-        {
-            params.command = wrapped;
-        }
-
-        if run_in_background {
-            return self.execute_background(params, ctx).await;
-        }
+        // Keep the supplied command as the display and minimization identity.
+        // Rewrites below apply only to the string passed to the shell.
+        let mut spawn_command = params.command.clone();
 
         // Auto-detect browser bridge commands and rewrite them to the installed
         // binary when available, but do not run setup automatically. Browser
         // setup should stay an explicit status/setup flow rather than a default
         // side effect of trying to use the browser.
-        if crate::browser::is_browser_command(&params.command) {
-            params.command = crate::browser::rewrite_command_with_full_path(&params.command);
+        if !run_in_background && crate::browser::is_browser_command(&spawn_command) {
+            spawn_command = crate::browser::rewrite_command_with_full_path(&spawn_command);
 
             // Start/attach a browser session for this jcode session.
             // This gives each agent its own browser tab, preventing
@@ -897,12 +1209,22 @@ impl Tool for BashTool {
                 && std::env::var("BROWSER_SESSION").is_err()
                 && let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id)
             {
-                params.command = format!("BROWSER_SESSION={} {}", session_name, params.command);
+                spawn_command = format!("BROWSER_SESSION={} {}", session_name, spawn_command);
             }
         }
 
+        #[cfg(unix)]
+        if let Some(wrapped) = wrap_repo_cargo_commands(&spawn_command, ctx.working_dir.as_deref())
+        {
+            spawn_command = wrapped;
+        }
+
+        if run_in_background {
+            return self.execute_background(params, ctx, spawn_command).await;
+        }
+
         // Foreground execution with stdin detection
-        self.execute_foreground(&params, &ctx).await
+        self.execute_foreground(&params, &ctx, &spawn_command).await
     }
 }
 
@@ -911,11 +1233,12 @@ impl BashTool {
         &self,
         params: &BashInput,
         ctx: &ToolContext,
+        spawn_command: &str,
     ) -> Result<ToolOutput> {
         #[cfg(unix)]
         if self.supports_reload_persistence(ctx) {
             return self
-                .execute_reload_persistable_foreground(params, ctx)
+                .execute_reload_persistable_foreground(params, ctx, spawn_command)
                 .await;
         }
 
@@ -924,7 +1247,7 @@ impl BashTool {
 
         let has_stdin_channel = ctx.stdin_request_tx.is_some();
 
-        let mut command = build_shell_command(&params.command);
+        let mut command = build_shell_command(spawn_command);
         command
             .kill_on_drop(true)
             .stdout(Stdio::piped())
@@ -953,6 +1276,7 @@ impl BashTool {
         let stdin_tx = ctx.stdin_request_tx.clone();
         let tool_call_id = ctx.tool_call_id.clone();
         let title_for_work = title.clone();
+        let command_for_work = params.command.clone();
         // Track progress parsed from output so a timeout promotion starts the
         // background task at the real percentage instead of 0%.
         let promoted_progress = std::sync::Arc::new(PromotedCommandProgress::default());
@@ -1056,7 +1380,7 @@ impl BashTool {
                     }
                     output.push_str(&stderr);
                 }
-                let output = format_command_output(output, status.code());
+                let output = format_command_output(&command_for_work, output, status.code());
                 Ok(ToolOutput::new(output).with_title(title_for_work))
             });
 
@@ -1135,6 +1459,7 @@ impl BashTool {
         &self,
         params: &BashInput,
         ctx: &ToolContext,
+        spawn_command: &str,
     ) -> Result<ToolOutput> {
         let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(600000);
         let timeout_duration = Duration::from_millis(timeout_ms);
@@ -1144,7 +1469,7 @@ impl BashTool {
         let info = manager.reserve_task_info();
         let display_name = summarize_background_command(params.intent.as_deref(), &params.command);
 
-        let mut cmd = build_detached_shell_wrapper(&params.command);
+        let mut cmd = build_detached_shell_wrapper(spawn_command);
         let stdout = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1167,7 +1492,7 @@ impl BashTool {
                 let _ = tokio::fs::remove_file(&info.output_file).await;
                 let _ = tokio::fs::remove_file(&info.status_file).await;
                 return Ok(
-                    ToolOutput::new(format_command_output(output, status.code())).with_title(
+                    ToolOutput::new(format_command_output(&params.command, output, status.code())).with_title(
                         params
                             .intent
                             .clone()
@@ -1287,7 +1612,12 @@ impl BashTool {
     }
 
     /// Execute a command in the background
-    async fn execute_background(&self, params: BashInput, ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute_background(
+        &self,
+        params: BashInput,
+        ctx: ToolContext,
+        spawn_command: String,
+    ) -> Result<ToolOutput> {
         let command = params.command.clone();
         let description = params.intent.clone();
         let display_name = summarize_background_command(description.as_deref(), &command);
@@ -1305,7 +1635,7 @@ impl BashTool {
                 notify,
                 wake,
 				move |output_path| async move {
-					let mut cmd = build_shell_command(&command);
+					let mut cmd = build_shell_command(&spawn_command);
 					#[cfg(unix)]
 					unsafe {
 						cmd.pre_exec(|| {

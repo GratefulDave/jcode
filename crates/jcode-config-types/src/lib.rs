@@ -1538,6 +1538,90 @@ pub struct LaunchHotkeysConfig {
     pub imported: bool,
 }
 
+/// Bash-tool output minimizer. Compresses verbose command output (git, cargo,
+/// pytest, …) before it is sent to the model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ShellMinimizerConfig {
+    /// Master switch. Default true.
+    pub enabled: bool,
+    /// Optional extra TOML settings file (`~` expanded). Merges user pipelines.
+    pub settings_path: Option<String>,
+    /// Optional xxHash64 digest (hex) pinning the settings file contents.
+    /// When set, the minimizer only honors `settings_path` if its content
+    /// hashes to this value — a trust gate for agent-writable paths. When
+    /// absent, the app core derives the hash from the resolved file content
+    /// at option-build time, refusing a file mutated mid-session.
+    pub settings_hash: Option<String>,
+    /// Allowlist of program names. Empty = all built-in filters.
+    pub only: Vec<String>,
+    /// Program names excluded from minimization.
+    pub except: Vec<String>,
+    /// Capture cap in bytes; over this the raw output is kept. Default 4 MiB.
+    pub max_capture_bytes: u32,
+    /// `default` or `aggressive` source outlining for `cat` of source files.
+    /// `default` outlines files of ≥160 lines / 12 KiB into imports +
+    /// declarations; `aggressive` additionally strips function bodies at any
+    /// size.
+    pub source_outline_level: String,
+    /// When Some(true), use the conservative legacy grep/find/pytest path.
+    pub legacy_filters: Option<bool>,
+}
+
+impl Default for ShellMinimizerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            settings_path: None,
+            settings_hash: None,
+            only: Vec::new(),
+            except: Vec::new(),
+            max_capture_bytes: 4 * 1024 * 1024,
+            source_outline_level: "default".to_string(),
+            legacy_filters: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod shell_minimizer_config_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_enabled_with_4mib_cap() {
+        let cfg = ShellMinimizerConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_capture_bytes, 4 * 1024 * 1024);
+        assert_eq!(cfg.source_outline_level, "default");
+        assert!(cfg.only.is_empty());
+        assert!(cfg.except.is_empty());
+    }
+
+    #[test]
+    fn json_object_deserializes() {
+        let cfg: ShellMinimizerConfig = serde_json::from_str(
+            r#"{"enabled":false,"only":["git"],"except":["docker"],"max_capture_bytes":1024,"source_outline_level":"aggressive"}"#,
+        )
+        .expect("parse");
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.only, vec!["git"]);
+        assert_eq!(cfg.except, vec!["docker"]);
+        assert_eq!(cfg.max_capture_bytes, 1024);
+        assert_eq!(cfg.source_outline_level, "aggressive");
+    }
+
+    #[test]
+    fn settings_hash_is_optional_and_deserializes() {
+        let absent = ShellMinimizerConfig::default();
+        assert!(absent.settings_hash.is_none());
+        let pinned: ShellMinimizerConfig = serde_json::from_str(
+            r#"{"settings_path":"~/.config/jcode/minimizer.toml","settings_hash":"0123456789abcdef"}"#,
+        )
+        .expect("parse");
+        assert_eq!(pinned.settings_hash.as_deref(), Some("0123456789abcdef"));
+    }
+}
+
 #[cfg(test)]
 mod reasoning_display_defaults_tests {
     use super::*;

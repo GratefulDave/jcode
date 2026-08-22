@@ -364,6 +364,12 @@ impl Config {
         {
             self.features.update_channel = channel;
         }
+        if let Ok(v) = std::env::var("JCODE_SHELL_MINIMIZER_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.shell_minimizer.enabled = parsed;
+            }
+        }
+
 
         // Agents (spawned helper sessions)
         if let Ok(v) = std::env::var("JCODE_SWARM_MODEL") {

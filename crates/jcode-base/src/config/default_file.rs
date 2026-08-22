@@ -336,6 +336,23 @@ disable_base_tools = false
 mcp_tools = "auto"
 mcp_tools_token_threshold = 8000
 
+[shell_minimizer]
+# Compress verbose bash output (git, cargo, pytest, docker, …) before it
+# reaches the model. Enabled by default. Disable with enabled = false or
+# JCODE_SHELL_MINIMIZER_ENABLED=0.
+enabled = true
+# Optional extra TOML filter file. ~ is expanded.
+# settings_path = "~/.jcode/minimizer.toml"
+# Restrict to these program names (empty = all built-in filters).
+# only = ["git", "cargo"]
+# except = ["docker"]
+# Over this many captured bytes the raw output is kept unchanged.
+max_capture_bytes = 4194304
+# default | aggressive — aggressive outlines cat of source files always.
+source_outline_level = "default"
+# legacy_filters = false
+
+
 [acp]
 # Agent Client Protocol adapter compatibility profile: standard, extended, or full.
 # standard emits only spec-compatible ACP messages.
