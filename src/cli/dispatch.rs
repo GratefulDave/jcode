@@ -6,8 +6,8 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Instant;
 
 use super::args::{
-    AmbientCommand, Args, AuthCommand, CloudCommand, CloudSessionsCommand, Command, MemoryCommand,
-    ModelCommand, ProviderCommand, RestartCommand, ServerCommand, SessionCommand,
+    AmbientCommand, Args, AuthCommand, CloudCommand, CloudSessionsCommand, Command, McpCommand,
+    MemoryCommand, ModelCommand, ProviderCommand, RestartCommand, ServerCommand, SessionCommand,
     TranscriptModeArg,
 };
 use crate::{
@@ -379,6 +379,11 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                     model_catalog,
                     json,
                 })?;
+            }
+        },
+        Some(Command::Mcp(subcmd)) => match subcmd {
+            McpCommand::List { json } => {
+                commands::run_mcp_list_command(json)?;
             }
         },
         Some(Command::Memory(subcmd)) => {

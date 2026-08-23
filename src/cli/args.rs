@@ -305,6 +305,10 @@ pub(crate) enum Command {
     #[command(subcommand)]
     Provider(ProviderCommand),
 
+    /// MCP server discovery helpers
+    #[command(subcommand)]
+    Mcp(McpCommand),
+
     /// Memory management commands
     #[command(subcommand)]
     Memory(MemoryCommand),
@@ -1006,6 +1010,16 @@ pub(crate) enum ProviderCommand {
         model_catalog: bool,
 
         /// Emit JSON instead of human-readable setup output
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum McpCommand {
+    /// List MCP servers effective for the current directory
+    List {
+        /// Emit JSON instead of plain text
         #[arg(long)]
         json: bool,
     },

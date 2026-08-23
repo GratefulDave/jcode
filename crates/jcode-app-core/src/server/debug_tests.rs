@@ -724,6 +724,31 @@ mod debug_execution_tests {
     }
 
     #[tokio::test]
+    async fn resolve_debug_session_falls_back_when_tracked_current_is_stale() {
+        // The server tracks the last connected client's id; after that client
+        // disconnects without cleanup the id is unknown. An implicit target
+        // must degrade to the single-active-session fallback instead of
+        // failing every debug command.
+        let agent = test_agent().await;
+        let session_id = {
+            let agent = agent.lock().await;
+            agent.session_id().to_string()
+        };
+        let sessions = Arc::new(RwLock::new(HashMap::from([(
+            session_id.clone(),
+            agent.clone(),
+        )])));
+        let current = Arc::new(RwLock::new("session_stale_0000000000_deadbeef".to_string()));
+
+        let (resolved_id, resolved_agent) = resolve_debug_session(&sessions, &current, None)
+            .await
+            .expect("stale implicit target should fall back");
+
+        assert_eq!(resolved_id, session_id);
+        assert!(Arc::ptr_eq(&resolved_agent, &agent));
+    }
+
+    #[tokio::test]
     async fn resolve_debug_session_errors_for_unknown_or_missing_session() {
         let agent_a = test_agent().await;
         let id_a = {
