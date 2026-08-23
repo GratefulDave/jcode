@@ -43,6 +43,16 @@ pub struct SkillRegistry {
 /// defensively but with a bound to avoid walking arbitrarily deep trees.
 const PLUGIN_SCAN_MAX_DEPTH: usize = 5;
 
+/// Read a boolean discovery override from the environment. Only exact
+/// `1`/`true`/`yes` values enable; anything else (including unset) defers to
+/// the config default.
+pub(crate) fn env_flag_enabled(key: &str) -> bool {
+    matches!(
+        std::env::var(key).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 impl SkillRegistry {
     /// Process-wide shared mutable registry used by both `skill_manage` and
     /// direct slash invocation paths. Keeping a single registry prevents slash
@@ -224,21 +234,26 @@ impl SkillRegistry {
     }
 
     /// Load only the shared global skill sources: Claude Code plugin installs,
-    /// `~/.jcode/skills/`, and `~/.agents/skills/`.
+    /// `~/.jcode/skills/`, and (opt-in) `~/.agents/skills/`.
     ///
     /// This is what the process-wide shared registry holds. Project-local
     /// skills are intentionally excluded: they are a per-session overlay
     /// resolved from the active session's workspace root (issue #457), never
     /// from the daemon's startup cwd, and never shared across sessions.
     pub fn load_global() -> Result<Self> {
-        // First-run import from Claude Code / Codex CLI
-        Self::import_from_external();
+        // First-run import from Claude Code / Codex CLI (opt-in; see
+        // `import_external_enabled`).
+        if Self::import_external_enabled() {
+            Self::import_from_external();
+        }
 
         let mut registry = Self::default();
 
         // Load skills provided by Claude Code plugins/marketplace installs
         // first, so explicit jcode/agents skills with the same name win below.
-        if let Some(plugins_root) = Self::claude_plugins_root() {
+        if Self::plugin_scan_enabled()
+            && let Some(plugins_root) = Self::claude_plugins_root()
+        {
             registry.load_plugin_skills_from_root(&plugins_root);
         }
 
@@ -250,8 +265,12 @@ impl SkillRegistry {
             }
         }
 
-        // Load from ~/.agents/skills/ (shared cross-tool `.agents` convention)
-        if let Ok(agents_skills) = crate::storage::user_home_path(".agents/skills")
+        // Load from ~/.agents/skills/ (shared cross-tool `.agents` convention).
+        // External skill source like the Claude Code plugin store: opt-in via
+        // [skills].import_external / JCODE_SKILL_IMPORT_EXTERNAL=1 so other
+        // tools' shared skills never leak into jcode sessions by default.
+        if Self::import_external_enabled()
+            && let Ok(agents_skills) = crate::storage::user_home_path(".agents/skills")
             && agents_skills.exists()
         {
             registry.load_from_dir(&agents_skills)?;
@@ -330,6 +349,21 @@ impl SkillRegistry {
         crate::storage::user_home_path(".claude/plugins")
             .ok()
             .filter(|p| p.is_dir())
+    }
+
+    /// Whether to scan the Claude Code plugin store for skills. The
+    /// `JCODE_SKILL_PLUGIN_SCAN=1` environment variable overrides the
+    /// `[skills].plugin_scan` config setting (both default OFF).
+    fn plugin_scan_enabled() -> bool {
+        env_flag_enabled("JCODE_SKILL_PLUGIN_SCAN")
+            || crate::config::config().skills.plugin_scan
+    }
+
+    /// Whether to import skills from Claude Code / Codex CLI on first run.
+    /// The `JCODE_SKILL_IMPORT_EXTERNAL=1` environment variable overrides the
+    /// `[skills].import_external` config setting (both default OFF).
+    fn import_external_enabled() -> bool {
+        env_flag_enabled("JCODE_SKILL_IMPORT_EXTERNAL")
     }
 
     /// Load skills provided by Claude Code plugins under `plugins_root`.
@@ -601,7 +635,9 @@ impl SkillRegistry {
 
         // Load skills provided by Claude Code plugins/marketplace installs
         // first, so explicit jcode/agents skills with the same name win below.
-        if let Some(plugins_root) = Self::claude_plugins_root() {
+        if Self::plugin_scan_enabled()
+            && let Some(plugins_root) = Self::claude_plugins_root()
+        {
             count += self.load_plugin_skills_from_root(&plugins_root);
         }
 
@@ -1472,5 +1508,162 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let missing = temp.path().join("does-not-exist");
         assert!(SkillRegistry::plugin_skill_dirs_under(&missing).is_empty());
+    }
+
+    // ---- [skills] discovery gating (plugin scan / first-run import) ----
+
+    /// Restore saved env vars and invalidate the config cache. Call before
+    /// assertions so a failing assert cannot leak sandbox state.
+    fn restore_skill_env(
+        home: Option<std::ffi::OsString>,
+        scan: Option<std::ffi::OsString>,
+        import: Option<std::ffi::OsString>,
+    ) {
+        match home {
+            Some(v) => crate::env::set_var("JCODE_HOME", v),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        match scan {
+            Some(v) => crate::env::set_var("JCODE_SKILL_PLUGIN_SCAN", v),
+            None => crate::env::remove_var("JCODE_SKILL_PLUGIN_SCAN"),
+        }
+        match import {
+            Some(v) => crate::env::set_var("JCODE_SKILL_IMPORT_EXTERNAL", v),
+            None => crate::env::remove_var("JCODE_SKILL_IMPORT_EXTERNAL"),
+        }
+        crate::config::invalidate_config_cache();
+    }
+
+    #[test]
+    fn default_config_does_not_scan_claude_plugins() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_scan = std::env::var_os("JCODE_SKILL_PLUGIN_SCAN");
+        let prev_import = std::env::var_os("JCODE_SKILL_IMPORT_EXTERNAL");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::remove_var("JCODE_SKILL_PLUGIN_SCAN");
+        crate::env::remove_var("JCODE_SKILL_IMPORT_EXTERNAL");
+        // No config.toml in the sandbox: absent [skills] must parse as all-OFF.
+        crate::config::invalidate_config_cache();
+
+        // Fake Claude Code plugin store under the sandboxed JCODE_HOME.
+        let install = home.path().join(
+            std::path::Path::new("external/.claude/plugins/cache/marketplace/my-plugin/1.0.0"),
+        );
+        write_plugin_skill(&install, "plugin-only-skill");
+
+        let registry = SkillRegistry::load_global().expect("load global skills");
+        restore_skill_env(prev_home, prev_scan, prev_import);
+
+        assert!(
+            !registry.contains("plugin-only-skill"),
+            "plugin scan is opt-in: default config must not load ~/.claude/plugins skills"
+        );
+    }
+
+    #[test]
+    fn plugin_scan_env_override_scans_claude_plugins() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_scan = std::env::var_os("JCODE_SKILL_PLUGIN_SCAN");
+        let prev_import = std::env::var_os("JCODE_SKILL_IMPORT_EXTERNAL");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var("JCODE_SKILL_PLUGIN_SCAN", "1");
+        crate::env::remove_var("JCODE_SKILL_IMPORT_EXTERNAL");
+        crate::config::invalidate_config_cache();
+
+        let install = home.path().join(
+            std::path::Path::new("external/.claude/plugins/cache/marketplace/my-plugin/1.0.0"),
+        );
+        write_plugin_skill(&install, "plugin-only-skill");
+
+        let registry = SkillRegistry::load_global().expect("load global skills");
+        restore_skill_env(prev_home, prev_scan, prev_import);
+
+        assert!(
+            registry.contains("plugin-only-skill"),
+            "JCODE_SKILL_PLUGIN_SCAN=1 overrides the OFF config default"
+        );
+    }
+
+    #[test]
+    fn external_import_is_gated_by_default_and_enabled_by_env_override() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_scan = std::env::var_os("JCODE_SKILL_PLUGIN_SCAN");
+        let prev_import = std::env::var_os("JCODE_SKILL_IMPORT_EXTERNAL");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::remove_var("JCODE_SKILL_PLUGIN_SCAN");
+        crate::env::remove_var("JCODE_SKILL_IMPORT_EXTERNAL");
+        crate::config::invalidate_config_cache();
+
+        // External sources present; ~/.jcode/skills does not exist (first run).
+        // ~/.agents/skills is another tool's shared directory: the test only
+        // reads it through load_global, never writes outside the sandbox home.
+        write_test_skill(&home.path().join("external"), ".claude", "claude-skill");
+        write_test_skill(&home.path().join("external"), ".codex", "codex-skill");
+        write_test_skill(&home.path().join("external"), ".agents", "agents-skill");
+
+        let registry = SkillRegistry::load_global().expect("load global skills");
+        assert!(
+            !registry.contains("claude-skill") && !registry.contains("codex-skill"),
+            "first-run import is opt-in: default config must not copy external skills"
+        );
+        assert!(
+            !registry.contains("agents-skill"),
+            "~/.agents/skills is an external source: default config must not load it"
+        );
+        assert!(
+            !home.path().join("skills").exists(),
+            "gated import must not create ~/.jcode/skills"
+        );
+
+        // Env override enables the first-run import.
+        crate::env::set_var("JCODE_SKILL_IMPORT_EXTERNAL", "1");
+        crate::config::invalidate_config_cache();
+        let registry = SkillRegistry::load_global().expect("load global skills");
+        restore_skill_env(prev_home, prev_scan, prev_import);
+
+        assert!(registry.contains("claude-skill"));
+        assert!(registry.contains("codex-skill"));
+        assert!(
+            registry.contains("agents-skill"),
+            "JCODE_SKILL_IMPORT_EXTERNAL=1 must enable ~/.agents/skills loading"
+        );
+        assert!(home.path().join("skills/claude-skill/SKILL.md").exists());
+
+    }
+    #[test]
+    fn config_enabled_plugin_scan_scans_claude_plugins_without_env() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_scan = std::env::var_os("JCODE_SKILL_PLUGIN_SCAN");
+        let prev_import = std::env::var_os("JCODE_SKILL_IMPORT_EXTERNAL");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::remove_var("JCODE_SKILL_PLUGIN_SCAN");
+        crate::env::remove_var("JCODE_SKILL_IMPORT_EXTERNAL");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[skills]\nplugin_scan = true\n",
+        )
+        .expect("write sandbox config.toml");
+        crate::config::invalidate_config_cache();
+
+        let install = home.path().join(
+            std::path::Path::new("external/.claude/plugins/cache/marketplace/my-plugin/1.0.0"),
+        );
+        write_plugin_skill(&install, "plugin-only-skill");
+
+        let registry = SkillRegistry::load_global().expect("load global skills");
+        restore_skill_env(prev_home, prev_scan, prev_import);
+
+        assert!(
+            registry.contains("plugin-only-skill"),
+            "[skills].plugin_scan = true must enable the Claude Code plugin scan"
+        );
     }
 }

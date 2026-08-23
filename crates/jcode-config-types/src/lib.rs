@@ -873,6 +873,42 @@ impl Default for HooksConfig {
     }
 }
 
+/// Skill discovery configuration.
+///
+/// By default jcode only loads skills from `~/.jcode/skills/`,
+/// `~/.agents/skills/`, and project-local overlay directories. Scanning the
+/// Claude Code plugin store (`~/.claude/plugins`) and the first-run import
+/// from external tools are opt-in so a fresh install never silently absorbs
+/// another tool's skills. Both default OFF; environment variables override
+/// these settings (`JCODE_SKILL_PLUGIN_SCAN=1`, `JCODE_SKILL_IMPORT_EXTERNAL=1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Scan the Claude Code plugin store (`~/.claude/plugins`) for skills.
+    /// Default: false. Env override: JCODE_SKILL_PLUGIN_SCAN=1.
+    pub plugin_scan: bool,
+    /// Import skills from Claude Code / Codex CLI on first run (only when
+    /// `~/.jcode/skills/` does not exist yet). Default: false.
+    /// Env override: JCODE_SKILL_IMPORT_EXTERNAL=1.
+    pub import_external: bool,
+}
+
+/// MCP server source configuration.
+///
+/// jcode's own servers come from `~/.jcode/mcp.json` and project-local
+/// `mcp.json` files. Merging another tool's live configuration is opt-in so a
+/// fresh fork never inherits servers it did not ask for. Default OFF;
+/// environment variables override these settings (`JCODE_ENABLE_CLAUDE_MCP=1`,
+/// legacy kill switch `JCODE_DISABLE_CLAUDE_MCP=1` wins over both).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct McpSourcesConfig {
+    /// Merge live Claude Code MCP sources (`~/.claude.json` global and
+    /// per-project servers, plus the legacy `~/.claude/mcp.json`) on every
+    /// load. Default: false. Env override: JCODE_ENABLE_CLAUDE_MCP=1.
+    pub live_claude: bool,
+}
+
 /// Automatic end-of-turn code review configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -1566,5 +1602,49 @@ mod reasoning_display_defaults_tests {
         display.set_reasoning_display(ReasoningDisplayMode::Off);
         assert!(display.has_explicit_reasoning_display());
         assert!(!display.show_thinking);
+    }
+}
+
+#[cfg(test)]
+mod skills_config_tests {
+    use super::*;
+
+    #[test]
+    fn skills_config_defaults_off_and_tolerates_missing_fields() {
+        // Absent [skills] section / empty object parses to both-OFF defaults.
+        let empty: SkillsConfig = serde_json::from_str("{}").expect("parse empty object");
+        assert!(!empty.plugin_scan);
+        assert!(!empty.import_external);
+
+        // Partial objects fall back per-field.
+        let partial: SkillsConfig =
+            serde_json::from_str(r#"{"plugin_scan": true}"#).expect("parse partial object");
+        assert!(partial.plugin_scan);
+        assert!(!partial.import_external);
+
+        assert_eq!(
+            SkillsConfig::default(),
+            SkillsConfig {
+                plugin_scan: false,
+                import_external: false,
+            }
+        );
+    }
+}
+
+#[cfg(test)]
+mod mcp_sources_config_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_sources_config_defaults_off_and_tolerates_missing_fields() {
+        let empty: McpSourcesConfig = serde_json::from_str("{}").expect("parse empty object");
+        assert!(!empty.live_claude);
+
+        let explicit: McpSourcesConfig =
+            serde_json::from_str(r#"{"live_claude": true}"#).expect("parse explicit object");
+        assert!(explicit.live_claude);
+
+        assert!(!McpSourcesConfig::default().live_claude);
     }
 }

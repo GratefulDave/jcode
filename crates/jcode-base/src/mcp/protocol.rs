@@ -465,6 +465,18 @@ impl McpConfig {
         )
     }
 
+    /// Whether live Claude Code MCP sources (`~/.claude.json` and the legacy
+    /// `~/.claude/mcp.json`) merge into the session. Fork default is OFF:
+    /// enable via `[mcp_sources].live_claude = true` in config.toml or the
+    /// `JCODE_ENABLE_CLAUDE_MCP=1` environment variable (env wins). The
+    /// legacy kill switch `JCODE_DISABLE_CLAUDE_MCP=1` disables regardless of
+    /// config.
+    fn live_claude_mcp_enabled() -> bool {
+        !crate::skill::env_flag_enabled("JCODE_DISABLE_CLAUDE_MCP")
+            && (crate::skill::env_flag_enabled("JCODE_ENABLE_CLAUDE_MCP")
+                || crate::config::config().mcp_sources.live_claude)
+    }
+
     /// Parse MCP servers from Codex CLI's config.toml ([mcp_servers.*] sections)
     fn load_from_codex_toml(path: &std::path::Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
@@ -603,11 +615,12 @@ impl McpConfig {
         reason = "Import logic keeps source-specific MCP config merge order explicit"
     )]
     pub fn load_for_dir(project_dir: Option<&std::path::Path>) -> Self {
-        // Codex CLI is a one-time migration. Claude Code remains a live source.
+        // Codex CLI is a one-time migration. Claude Code is an opt-in live
+        // source in this fork (see `live_claude_mcp_enabled`).
         Self::import_from_codex_once();
 
         let mut merged = Self::default();
-        let claude_mcp_enabled = std::env::var_os("JCODE_DISABLE_CLAUDE_MCP").is_none();
+        let claude_mcp_enabled = Self::live_claude_mcp_enabled();
 
         // Load jcode's own global config (~/.jcode/mcp.json)
         if let Ok(jcode_dir) = crate::storage::jcode_dir() {
