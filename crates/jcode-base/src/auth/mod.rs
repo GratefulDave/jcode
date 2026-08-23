@@ -25,6 +25,7 @@ mod status_types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_sandbox;
 pub mod validation;
+pub mod xai_oauth;
 
 pub(crate) use commands::command_exists;
 #[cfg(test)]
@@ -238,6 +239,7 @@ fn available_provider_base_readiness(provider: LoginProviderDescriptor) -> AuthR
         | crate::provider_catalog::LoginProviderTarget::Copilot
         | crate::provider_catalog::LoginProviderTarget::Gemini
         | crate::provider_catalog::LoginProviderTarget::Antigravity
+        | crate::provider_catalog::LoginProviderTarget::XaiOauth
         | crate::provider_catalog::LoginProviderTarget::Google => AuthReadinessLevel::Authenticated,
         _ => AuthReadinessLevel::CredentialPresent,
     }
@@ -401,6 +403,7 @@ impl AuthStatus {
             || self.gemini == AuthState::Available
             || self.cursor == AuthState::Available
             || self.grok_build == AuthState::Available
+            || self.xai_oauth == AuthState::Available
     }
 
     /// Emit a structured, non-secret snapshot of which providers currently have
@@ -436,6 +439,7 @@ impl AuthStatus {
                 ("antigravity", self.antigravity.label().to_string()),
                 ("gemini", self.gemini.label().to_string()),
                 ("cursor", self.cursor.label().to_string()),
+                ("xai_oauth", self.xai_oauth.label().to_string()),
                 ("grok_build", self.grok_build.label().to_string()),
             ],
         );
@@ -470,6 +474,7 @@ impl AuthStatus {
             LoginProviderAuthStateKey::Gemini => self.gemini,
             LoginProviderAuthStateKey::Cursor => self.cursor,
             LoginProviderAuthStateKey::GrokBuild => self.grok_build,
+            LoginProviderAuthStateKey::XaiOauth => self.xai_oauth,
             LoginProviderAuthStateKey::Google => self.google,
         }
     }
@@ -535,6 +540,7 @@ impl AuthStatus {
                 }
             }
             crate::provider_catalog::LoginProviderTarget::GrokBuild => self.grok_build,
+            crate::provider_catalog::LoginProviderTarget::XaiOauth => self.xai_oauth,
             crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
                 if crate::provider_catalog::openai_compatible_profile_is_configured(profile) {
                     AuthState::Available
@@ -615,6 +621,15 @@ impl AuthStatus {
                     "not configured (Jcode downloads the provider backend during login)".to_string()
                 }
             }
+            crate::provider_catalog::LoginProviderTarget::XaiOauth => {
+                if self.xai_oauth == AuthState::Available {
+                    "SuperGrok device-code OAuth (`XAI_OAUTH_TOKEN` or ~/.jcode/xai-oauth.json)"
+                        .to_string()
+                } else {
+                    "not configured".to_string()
+                }
+            }
+
             crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
                 let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
                 if self.state_for_provider(provider) == AuthState::Available {
@@ -857,6 +872,26 @@ impl AuthStatus {
                 AuthRefreshSupport::ExternalManaged,
                 AuthValidationMethod::CommandProbe,
             ),
+            crate::provider_catalog::LoginProviderTarget::XaiOauth => (
+                if state == AuthState::Available {
+                    AuthCredentialSource::JcodeManagedFile
+                } else {
+                    AuthCredentialSource::None
+                },
+                if state == AuthState::Available {
+                    "~/.jcode/xai-oauth.json or XAI_OAUTH_TOKEN".to_string()
+                } else {
+                    "SuperGrok OAuth not configured".to_string()
+                },
+                if state == AuthState::NotConfigured {
+                    AuthExpiryConfidence::Unknown
+                } else {
+                    AuthExpiryConfidence::Exact
+                },
+                AuthRefreshSupport::Automatic,
+                AuthValidationMethod::TimestampCheck,
+            ),
+
             crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
                 // Prefer the active named config profile's credential location
                 // (set via `--provider-profile`) over the built-in profile env
@@ -1000,6 +1035,22 @@ fn build_auth_status_uncached(mode: AuthProbeMode) -> (AuthStatus, Vec<(&'static
             )
         }
     });
+    record_auth_probe_step(&mut timings, "xai_oauth", || {
+        status.xai_oauth = if xai_oauth::env_token_present() {
+            AuthState::Available
+        } else {
+            refreshable_token_state(
+                "xai-oauth",
+                xai_oauth::load_credentials().map(|credentials| {
+                    (
+                        credentials.is_expired(),
+                        credentials.refresh_token.unwrap_or_default(),
+                    )
+                }),
+            )
+        }
+    });
+
     record_auth_probe_step(&mut timings, "cursor", || {
         probe_cursor_status(&mut status, mode)
     });
@@ -1330,6 +1381,26 @@ fn assessment_for_key(
             AuthRefreshSupport::ExternalManaged,
             AuthValidationMethod::CommandProbe,
         ),
+        LoginProviderAuthStateKey::XaiOauth => (
+            if state == AuthState::Available {
+                AuthCredentialSource::JcodeManagedFile
+            } else {
+                AuthCredentialSource::None
+            },
+            if state == AuthState::Available {
+                "~/.jcode/xai-oauth.json or XAI_OAUTH_TOKEN".to_string()
+            } else {
+                "SuperGrok OAuth not configured".to_string()
+            },
+            if state == AuthState::NotConfigured {
+                AuthExpiryConfidence::Unknown
+            } else {
+                AuthExpiryConfidence::Exact
+            },
+            AuthRefreshSupport::Automatic,
+            AuthValidationMethod::TimestampCheck,
+        ),
+
         LoginProviderAuthStateKey::Google => {
             let (source, detail) = summarize_sources(vec![google_source()]);
             (

@@ -11,8 +11,8 @@ pub use jcode_config_types::{
     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
-    WebSearchConfig, WebSearchEngine,
+    McpSourcesConfig, SkillsConfig, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout,
+    TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -510,6 +510,15 @@ pub struct Config {
 
     /// Lifecycle hooks (external commands at turn/session/tool boundaries)
     pub hooks: HooksConfig,
+
+    /// Skill discovery (Claude Code plugin scan / first-run external import).
+    /// Both default OFF; see [`SkillsConfig`].
+    pub skills: SkillsConfig,
+
+
+    /// MCP server sources (live Claude Code merge). Default OFF; see
+    /// [`McpSourcesConfig`].
+    pub mcp_sources: McpSourcesConfig,
 
     /// Ambient mode configuration
     pub ambient: AmbientConfig,

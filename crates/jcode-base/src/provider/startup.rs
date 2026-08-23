@@ -314,6 +314,11 @@ impl MultiProvider {
                         pref
                     ));
                 }
+            } else if super::subscription_runtime_profile_prefix(&pref).is_some() {
+                // Runtime-owned subscription profiles are not ActiveProvider
+                // keys; their routing is applied with the config default model
+                // below (set_config_default_model), so no slot preselection
+                // happens here.
             } else {
                 crate::logging::warn(&format!(
                     "Unknown default_provider '{}' in config (expected: claude|openai|copilot|antigravity|gemini|cursor|bedrock|openrouter or an OpenAI-compatible profile such as deepseek|comtegra|zai|openai-compatible)",
@@ -341,6 +346,29 @@ impl MultiProvider {
             routes_memo: Mutex::new(None),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
+
+        // Cached OAuth logins must surface in /models on a fresh process,
+        // not only after an in-session login event fires handle_auth_changed.
+        {
+            let registry = ProviderRegistry::new(&result);
+            if crate::auth::grok_build::has_cached_login()
+                && registry.compatible_profile(GROK_BUILD_PROFILE_ID).is_none()
+                && let Some(grok) =
+                    external::instantiate_expected_external_provider(external::GROK_BUILD_RUNTIME)
+            {
+                crate::logging::info("Initialized Grok Build provider from cached login");
+                registry.install_compatible_profile(GROK_BUILD_PROFILE_ID, grok);
+            }
+            if crate::auth::xai_oauth::has_cached_login()
+                && registry.compatible_profile(XAI_OAUTH_PROFILE_ID).is_none()
+                && let Some(xai_oauth) = external::instantiate_expected_external_provider(
+                    external::XAI_OAUTH_RUNTIME,
+                )
+            {
+                crate::logging::info("Initialized SuperGrok provider from cached login");
+                registry.install_compatible_profile(XAI_OAUTH_PROFILE_ID, xai_oauth);
+            }
+        }
 
         // An explicit CLI/environment provider selection owns startup routing.
         // Applying the configured default model here can reactivate its configured
