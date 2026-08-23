@@ -10,6 +10,7 @@ ios_simulator_screenshot.png
 /.jcode/generated-images/
 /telemetry-worker/backups/
 target-ttest/
+target-xai-oauth/
 target-ttest*/
 
 # Local capture artefacts are not committed baselines.

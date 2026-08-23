@@ -600,6 +600,31 @@ swarm_max_concurrent_agents = 32
 # JCODE_HOOK_ERROR.
 # post_tool = ""
 
+[skills]
+# Skill discovery beyond jcode's own directories. By default jcode only loads
+# skills from ~/.jcode/skills/, ~/.agents/skills/, and project-local
+# .jcode/.agents/.claude skill overlays.
+#
+# Scan the Claude Code plugin store (~/.claude/plugins) for plugin-provided
+# skills. Default: false. Env override: JCODE_SKILL_PLUGIN_SCAN=1.
+# plugin_scan = false
+#
+# Import skills from Claude Code (~/.claude/skills) and Codex CLI
+# (~/.codex/skills) on first run, when ~/.jcode/skills does not exist yet.
+# Default: false. Env override: JCODE_SKILL_IMPORT_EXTERNAL=1.
+# import_external = false
+
+[mcp_sources]
+# MCP server sources beyond jcode's own ~/.jcode/mcp.json and project-local
+# .jcode/mcp.json / .mcp.json / .claude/mcp.json files.
+#
+# Merge live Claude Code MCP servers (~/.claude.json global + per-project
+# entries, plus the legacy ~/.claude/mcp.json) on every load. Values are read
+# live, never copied into jcode config. Default: false.
+# Env override: JCODE_ENABLE_CLAUDE_MCP=1. JCODE_DISABLE_CLAUDE_MCP=1 wins
+# over both this setting and the env override.
+# live_claude = false
+
 [ambient]
 # Ambient mode: background agent that maintains your codebase
 # Enable ambient mode (default: false)

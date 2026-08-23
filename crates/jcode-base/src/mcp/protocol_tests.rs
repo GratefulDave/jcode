@@ -569,10 +569,14 @@ fn claude_json_http_entry_does_not_displace_jcode_stdio_server() {
     let _guard = crate::storage::lock_test_env();
     let original_cwd = std::env::current_dir().expect("current cwd");
     let previous_home = std::env::var_os("JCODE_HOME");
+    let previous_enable = std::env::var_os("JCODE_ENABLE_CLAUDE_MCP");
     let home = tempfile::tempdir().expect("home tempdir");
     let project = tempfile::tempdir().expect("project tempdir");
     crate::env::set_var("JCODE_HOME", home.path());
     std::env::set_current_dir(project.path()).expect("set project cwd");
+    // The merge-precedence behavior under test needs the Claude source
+    // active, which is opt-in in this fork.
+    crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", "1");
 
     std::fs::write(
         home.path().join("mcp.json"),
@@ -605,6 +609,11 @@ fn claude_json_http_entry_does_not_displace_jcode_stdio_server() {
     } else {
         crate::env::remove_var("JCODE_HOME");
     }
+    if let Some(previous_enable) = previous_enable {
+        crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", previous_enable);
+    } else {
+        crate::env::remove_var("JCODE_ENABLE_CLAUDE_MCP");
+    }
     result.expect("issue #653 merge assertions");
 }
 
@@ -612,8 +621,12 @@ fn claude_json_http_entry_does_not_displace_jcode_stdio_server() {
 fn claude_is_live_while_codex_is_a_one_time_snapshot() {
     let _guard = crate::storage::lock_test_env();
     let previous_home = std::env::var_os("JCODE_HOME");
+    let previous_enable = std::env::var_os("JCODE_ENABLE_CLAUDE_MCP");
     let home = tempfile::tempdir().expect("home tempdir");
     crate::env::set_var("JCODE_HOME", home.path());
+    // This test exercises live-source mechanics, which are opt-in in this
+    // fork; flip the env override on for the duration.
+    crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", "1");
 
     let external = home.path().join("external");
     let codex_dir = external.join(".codex");
@@ -674,6 +687,11 @@ env = { TOKEN = "codex-inline-secret" }
     } else {
         crate::env::remove_var("JCODE_HOME");
     }
+    if let Some(previous_enable) = previous_enable {
+        crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", previous_enable);
+    } else {
+        crate::env::remove_var("JCODE_ENABLE_CLAUDE_MCP");
+    }
     result.expect("live Claude and snapshot Codex assertions");
 }
 
@@ -681,9 +699,11 @@ env = { TOKEN = "codex-inline-secret" }
 fn claude_only_config_never_creates_a_jcode_snapshot() {
     let _guard = crate::storage::lock_test_env();
     let previous_home = std::env::var_os("JCODE_HOME");
+    let previous_enable = std::env::var_os("JCODE_ENABLE_CLAUDE_MCP");
     let home = tempfile::tempdir().expect("home tempdir");
     crate::env::set_var("JCODE_HOME", home.path());
-
+    // Live-source mechanics are opt-in in this fork; flip the override on.
+    crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", "1");
     let external = home.path().join("external");
     std::fs::create_dir_all(&external).expect("create external config dir");
     std::fs::write(
@@ -706,6 +726,11 @@ fn claude_only_config_never_creates_a_jcode_snapshot() {
     } else {
         crate::env::remove_var("JCODE_HOME");
     }
+    if let Some(previous_enable) = previous_enable {
+        crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", previous_enable);
+    } else {
+        crate::env::remove_var("JCODE_ENABLE_CLAUDE_MCP");
+    }
     result.expect("Claude no-snapshot assertions");
 }
 
@@ -713,8 +738,11 @@ fn claude_only_config_never_creates_a_jcode_snapshot() {
 fn legacy_claude_config_is_live_and_deletions_do_not_leave_a_snapshot() {
     let _guard = crate::storage::lock_test_env();
     let previous_home = std::env::var_os("JCODE_HOME");
+    let previous_enable = std::env::var_os("JCODE_ENABLE_CLAUDE_MCP");
     let home = tempfile::tempdir().expect("home tempdir");
     crate::env::set_var("JCODE_HOME", home.path());
+    // Live-source mechanics are opt-in in this fork; flip the override on.
+    crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", "1");
 
     let legacy_dir = home.path().join("external/.claude");
     std::fs::create_dir_all(&legacy_dir).expect("create legacy Claude config dir");
@@ -753,6 +781,11 @@ fn legacy_claude_config_is_live_and_deletions_do_not_leave_a_snapshot() {
         crate::env::set_var("JCODE_HOME", previous_home);
     } else {
         crate::env::remove_var("JCODE_HOME");
+    }
+    if let Some(previous_enable) = previous_enable {
+        crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", previous_enable);
+    } else {
+        crate::env::remove_var("JCODE_ENABLE_CLAUDE_MCP");
     }
     result.expect("legacy Claude live-source assertions");
 }
@@ -828,4 +861,145 @@ fn mcp_source_logs_explain_provenance_without_config_values() {
     assert!(imported.contains("Claude Code MCP configuration remains live and was not copied"));
     assert!(!imported.contains("TOKEN"));
     assert!(!imported.contains("inline-secret"));
+}
+
+/// Sandbox with JCODE_HOME plus the Claude MCP gate env vars cleared, saving
+/// prior values for `restore_claude_mcp_env`. Caller must hold
+/// `crate::storage::lock_test_env()`.
+struct ClaudeMcpEnvGuard {
+    home: tempfile::TempDir,
+    previous_home: Option<std::ffi::OsString>,
+    previous_enable: Option<std::ffi::OsString>,
+    previous_disable: Option<std::ffi::OsString>,
+}
+
+fn sandbox_claude_mcp_env() -> ClaudeMcpEnvGuard {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let guard = ClaudeMcpEnvGuard {
+        home,
+        previous_home: std::env::var_os("JCODE_HOME"),
+        previous_enable: std::env::var_os("JCODE_ENABLE_CLAUDE_MCP"),
+        previous_disable: std::env::var_os("JCODE_DISABLE_CLAUDE_MCP"),
+    };
+    crate::env::set_var("JCODE_HOME", guard.home.path());
+    crate::env::remove_var("JCODE_ENABLE_CLAUDE_MCP");
+    crate::env::remove_var("JCODE_DISABLE_CLAUDE_MCP");
+    crate::config::invalidate_config_cache();
+    guard
+}
+
+fn restore_claude_mcp_env(guard: ClaudeMcpEnvGuard) {
+    match guard.previous_home {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    match guard.previous_enable {
+        Some(value) => crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", value),
+        None => crate::env::remove_var("JCODE_ENABLE_CLAUDE_MCP"),
+    }
+    match guard.previous_disable {
+        Some(value) => crate::env::set_var("JCODE_DISABLE_CLAUDE_MCP", value),
+        None => crate::env::remove_var("JCODE_DISABLE_CLAUDE_MCP"),
+    }
+    crate::config::invalidate_config_cache();
+}
+
+/// Write a jcode global server plus both live Claude sources into the
+/// sandboxed JCODE_HOME.
+fn write_live_claude_sources(home: &std::path::Path) {
+    std::fs::write(
+        home.join("mcp.json"),
+        r#"{"mcpServers":{"jcode-only":{"command":"jcode-bin"}}}"#,
+    )
+    .expect("write jcode mcp config");
+    let external = home.join("external");
+    std::fs::create_dir_all(external.join(".claude")).expect("create external dirs");
+    std::fs::write(
+        external.join(".claude.json"),
+        r#"{"mcpServers":{"claude-current":{"command":"claude-current-bin"}}}"#,
+    )
+    .expect("write current Claude config");
+    std::fs::write(
+        external.join(".claude/mcp.json"),
+        r#"{"mcpServers":{"claude-legacy":{"command":"claude-legacy-bin"}}}"#,
+    )
+    .expect("write legacy Claude config");
+}
+
+#[test]
+fn live_claude_mcp_sources_are_off_by_default() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+    write_live_claude_sources(env.home.path());
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    assert!(config.servers.contains_key("jcode-only"));
+    assert!(
+        !config.servers.contains_key("claude-current"),
+        "live Claude MCP sources are opt-in: default config must not merge ~/.claude.json"
+    );
+    assert!(
+        !config.servers.contains_key("claude-legacy"),
+        "default config must not merge the legacy ~/.claude/mcp.json"
+    );
+}
+
+#[test]
+fn live_claude_mcp_enable_env_override_loads_both_sources() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+    write_live_claude_sources(env.home.path());
+    crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", "1");
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    assert!(config.servers.contains_key("jcode-only"));
+    assert!(
+        config.servers.contains_key("claude-current"),
+        "JCODE_ENABLE_CLAUDE_MCP=1 overrides the OFF config default"
+    );
+    assert!(config.servers.contains_key("claude-legacy"));
+}
+
+#[test]
+fn live_claude_mcp_disable_env_wins_over_enable_override() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+    write_live_claude_sources(env.home.path());
+    crate::env::set_var("JCODE_ENABLE_CLAUDE_MCP", "1");
+    crate::env::set_var("JCODE_DISABLE_CLAUDE_MCP", "1");
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    assert!(config.servers.contains_key("jcode-only"));
+    assert!(
+        !config.servers.contains_key("claude-current") && !config.servers.contains_key("claude-legacy"),
+        "the legacy JCODE_DISABLE_CLAUDE_MCP kill switch must win over the enable override"
+    );
+}
+
+#[test]
+fn config_enabled_live_claude_mcp_without_env() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+    write_live_claude_sources(env.home.path());
+    std::fs::write(
+        env.home.path().join("config.toml"),
+        "[mcp_sources]\nlive_claude = true\n",
+    )
+    .expect("write sandbox config.toml");
+    crate::config::invalidate_config_cache();
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    assert!(
+        config.servers.contains_key("claude-current") && config.servers.contains_key("claude-legacy"),
+        "[mcp_sources].live_claude = true must enable both live Claude sources"
+    );
+    assert!(config.servers.contains_key("jcode-only"));
 }
