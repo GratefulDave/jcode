@@ -2039,6 +2039,86 @@ pub fn run_provider_list_command(emit_json: bool) -> Result<()> {
     report_info::run_provider_list_command(emit_json)
 }
 
+/// `jcode mcp list` — show the MCP servers effective for the current
+/// directory without needing a running daemon or session. Mirrors what a new
+/// session would load: user config, live Claude sources (when enabled),
+/// project-local files, and embedded core defaults.
+pub fn run_mcp_list_command(emit_json: bool) -> Result<()> {
+    let cwd = std::env::current_dir().ok();
+    let config = crate::mcp::McpConfig::load_for_dir(cwd.as_deref());
+
+    #[derive(Serialize)]
+    struct McpServerRow {
+        name: String,
+        transport: String,
+        command: String,
+        args: Vec<String>,
+        shared: bool,
+    }
+
+    let mut rows: Vec<McpServerRow> = config
+        .servers
+        .iter()
+        .map(|(name, server)| McpServerRow {
+            name: name.clone(),
+            transport: if server.is_stdio() {
+                "stdio".to_string()
+            } else {
+                format!(
+                    "{} (unsupported; jcode is stdio-only)",
+                    server.transport.as_deref().unwrap_or("http")
+                )
+            },
+            command: server.command.clone(),
+            args: server.args.clone(),
+            shared: server.shared,
+        })
+        .collect();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if emit_json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!("No MCP servers configured.");
+        println!("Add servers to ~/.jcode/mcp.json under \"servers\".");
+        return Ok(());
+    }
+
+    println!(
+        "MCP servers effective for {}:",
+        cwd.as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<current dir>".to_string())
+    );
+    for row in &rows {
+        let invocation = if row.command.is_empty() {
+            String::new()
+        } else {
+            format!("{} {}", row.command, row.args.join(" "))
+        };
+        println!(
+            "  {:<18} {:<8} shared={:<5} {}",
+            row.name, row.transport, row.shared, invocation
+        );
+    }
+    let unsupported: Vec<&str> = rows
+        .iter()
+        .filter(|row| !row.transport.starts_with("stdio"))
+        .map(|row| row.name.as_str())
+        .collect();
+    if !unsupported.is_empty() {
+        println!(
+            "  note: non-stdio entries ({}) are skipped by sessions",
+            unsupported.join(", ")
+        );
+    }
+    Ok(())
+}
+
+
 pub async fn run_provider_current_command(
     choice: &super::provider_init::ProviderChoice,
     model: Option<&str>,

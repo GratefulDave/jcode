@@ -477,6 +477,77 @@ impl McpConfig {
                 || crate::config::config().mcp_sources.live_claude)
     }
 
+    /// Whether embedded core MCP servers should be seeded into the effective
+    /// config for names no source defined. `[mcp_sources].core_defaults`
+    /// (default true) or the `JCODE_NO_CORE_MCP=1` environment variable
+    /// disables seeding entirely.
+    fn core_defaults_enabled() -> bool {
+        !crate::skill::env_flag_enabled("JCODE_NO_CORE_MCP")
+            && crate::config::config().mcp_sources.core_defaults
+    }
+
+    /// Embedded core MCP servers mirrored from the-library's managed entries.
+    ///
+    /// These are fork defaults, not user configuration: each is inserted into
+    /// the effective config only when no loaded source already defines a
+    /// server with the same name, so any user- or tool-supplied definition
+    /// always wins. `codebase-memory` is deliberately absent — jcode covers
+    /// codebase memory natively and must never inherit an external server for
+    /// it.
+    fn embedded_core_mcp_servers() -> Vec<(String, McpServerConfig)> {
+        let core = |command: &str,
+                    args: &[&str],
+                    env: std::collections::HashMap<String, String>|
+         -> McpServerConfig {
+            McpServerConfig {
+                command: command.to_string(),
+                args: args.iter().map(|a| a.to_string()).collect(),
+                env,
+                shared: true,
+                transport: None,
+                url: None,
+                headers: Default::default(),
+                enabled: None,
+                disabled: None,
+            }
+        };
+
+        vec![
+            (
+                "context-mode".to_string(),
+                core("/Users/davidandrews/.local/bin/context-mode-mcp", &[], Default::default()),
+            ),
+            (
+                "ast-grep".to_string(),
+                core(
+                    "uvx",
+                    &[
+                        "--from",
+                        "git+https://github.com/ast-grep/ast-grep-mcp",
+                        "--with",
+                        "mcp<2",
+                        "ast-grep-server",
+                    ],
+                    Default::default(),
+                ),
+            ),
+            (
+                "codemap".to_string(),
+                core(
+                    "node",
+                    &["/Users/davidandrews/PycharmProjects/the-library/tools/codemap/server.mjs"],
+                    [("CODEMAP_TOOLS".to_string(), "codemap_impact,entropy".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+            ),
+            (
+                "grep-app-stdio".to_string(),
+                core("uvx", &["--with", "mcp<2", "grep-mcp"], Default::default()),
+            ),
+        ]
+    }
+
     /// Parse MCP servers from Codex CLI's config.toml ([mcp_servers.*] sections)
     fn load_from_codex_toml(path: &std::path::Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
@@ -675,6 +746,15 @@ impl McpConfig {
                 &mut merged.servers,
                 Self::load_project_locals(project_root).servers,
             );
+        }
+
+        // Seed embedded core servers for names no source defined. Insertion
+        // (never overwrite) keeps every user- or tool-supplied definition
+        // authoritative, including ones that arrived from the merges above.
+        if Self::core_defaults_enabled() {
+            for (name, server) in Self::embedded_core_mcp_servers() {
+                merged.servers.entry(name).or_insert(server);
+            }
         }
 
         // Claude Code expands environment references after source precedence is

@@ -110,3 +110,31 @@ First `self-dev --build` attempt compiled `~/PycharmProjects/jcode-integration`
 the old inode until `server reload --force`. Verified with a one-shot turn plus
 log lines `Initialized SuperGrok provider from cached login` /
 `Applied default model 'grok-4.6' from config`.
+
+## Syncing upstream into the fork
+
+`jcode update` never touches this checkout — its source-update path manages
+its own clone at `~/.jcode/builds/source/jcode`
+(crates/jcode-app-core/src/update.rs:103). Upstream sync is manual git:
+
+```bash
+cd ~/PycharmProjects/jcode
+git fetch upstream
+git checkout master && git merge --ff-only upstream/master && git push origin master
+git checkout <feature-branch> && git merge master   # resolve conflicts here
+cargo test -p jcode-base --lib
+JCODE_REPO_DIR=$HOME/PycharmProjects/jcode jcode self-dev --build
+jcode server reload --force
+```
+
+- Fork `master` is the integration line (PRs from feature branches, squash
+  merge). Upstream PR creation is permission-blocked for this account; drift
+  is pull-only.
+- Expect conflicts where gates meet churn: `skill.rs`, `mcp/protocol.rs`.
+  The gating regression tests (31 skill + 60 mcp) are the merge gate — red
+  after merge means upstream changed behavior a gate depends on.
+- Avoid `jcode update`: it repoints release channels away from the self-dev
+  build. If it runs anyway, one `self-dev --build` restores the fork build.
+- The baked-in source path follows whatever tree last published `current`.
+  Installing a stable release flips it back; the compile-log lines always
+  reveal which tree is building.
