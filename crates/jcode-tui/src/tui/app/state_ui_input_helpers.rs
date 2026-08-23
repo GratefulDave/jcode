@@ -146,6 +146,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "/skills",
         "Show loaded skills and jcode-endorsed recommendations",
     ),
+    RegisteredCommand::public("/mcp", "Show MCP servers available to this session"),
     RegisteredCommand::public("/version", "Show current version"),
     RegisteredCommand::public("/changelog", "Show recent changes in this build"),
     RegisteredCommand::public("/info", "Show session info and tokens"),

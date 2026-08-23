@@ -1758,6 +1758,43 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    if trimmed == "/mcp" {
+        // Connected-server view for THIS session (tool counts come from the
+        // advertised catalog; servers connect lazily on first tool call, so a
+        // count of 0/… means "configured, not yet exercised"). For the
+        // config-level view across sources use `jcode mcp list` in a shell.
+        let mcps = app.mcp_servers();
+        if mcps.is_empty() {
+            app.push_display_message(
+                DisplayMessage::system(
+                    "No MCP servers connected in this session.\n\
+                     Configured entries load from ~/.jcode/mcp.json, project \
+                     ./.jcode/mcp.json, live Claude sources, and core defaults. \
+                     Run `jcode mcp list` in a shell for the full config-level set.",
+                )
+                .with_title("MCP"),
+            );
+        } else {
+            let mut lines = Vec::new();
+            for (name, count) in &mcps {
+                let state = if *count > 0 {
+                    format!("{} tools", count)
+                } else {
+                    String::new()
+                };
+                lines.push(format!("  {} {}", name, state));
+            }
+            app.push_display_message(
+                DisplayMessage::system(lines.join("\n")).with_title(format!(
+                    "MCP — {} server(s) available this session",
+                    mcps.len()
+                )),
+            );
+        }
+        app.set_status_notice("MCP");
+        return true;
+    }
+
     if trimmed == "/version" {
         let version = jcode_build_meta::version();
         let is_canary = if app.session.is_canary {
