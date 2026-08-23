@@ -434,6 +434,15 @@ pub fn open_weight_family_context_limit(model: &str) -> Option<usize> {
         return Some(128_000);
     }
 
+    // --- OpenRouter stealth/ox-alpha: 1M context ---
+    // The OpenRouter catalog only sometimes carries this stealth model's real
+    // window; without a static entry it falls through to the generic 200K
+    // default. Checked after the dynamic cache, so a live catalog value still
+    // wins when present.
+    if m.contains("ox-alpha") {
+        return Some(1_000_000);
+    }
+
     None
 }
 
@@ -743,6 +752,22 @@ mod tests {
         // Unrelated ids that merely start with `k` must not be misread as Kimi.
         assert_eq!(open_weight_family_context_limit("kernel-model"), None);
         assert_eq!(open_weight_family_context_limit("gpt-4k"), None);
+    }
+
+    /// OpenRouter's stealth/ox-alpha must not fall through to the generic 200K
+    /// default; it ships a 1M window.
+    #[test]
+    fn openrouter_ox_alpha_resolves_one_million_context() {
+        assert_eq!(
+            context_limit_for_model_with_provider("stealth/ox-alpha", Some("openrouter")),
+            Some(1_000_000)
+        );
+        // Slash-stripped and prefixed spellings resolve identically.
+        assert_eq!(open_weight_family_context_limit("ox-alpha"), Some(1_000_000));
+        assert_eq!(
+            open_weight_family_context_limit("stealth/ox-alpha"),
+            Some(1_000_000)
+        );
     }
 
     #[test]

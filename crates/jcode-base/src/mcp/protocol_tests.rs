@@ -871,6 +871,7 @@ struct ClaudeMcpEnvGuard {
     previous_home: Option<std::ffi::OsString>,
     previous_enable: Option<std::ffi::OsString>,
     previous_disable: Option<std::ffi::OsString>,
+    previous_no_core: Option<std::ffi::OsString>,
 }
 
 fn sandbox_claude_mcp_env() -> ClaudeMcpEnvGuard {
@@ -880,10 +881,12 @@ fn sandbox_claude_mcp_env() -> ClaudeMcpEnvGuard {
         previous_home: std::env::var_os("JCODE_HOME"),
         previous_enable: std::env::var_os("JCODE_ENABLE_CLAUDE_MCP"),
         previous_disable: std::env::var_os("JCODE_DISABLE_CLAUDE_MCP"),
+        previous_no_core: std::env::var_os("JCODE_NO_CORE_MCP"),
     };
     crate::env::set_var("JCODE_HOME", guard.home.path());
     crate::env::remove_var("JCODE_ENABLE_CLAUDE_MCP");
     crate::env::remove_var("JCODE_DISABLE_CLAUDE_MCP");
+    crate::env::remove_var("JCODE_NO_CORE_MCP");
     crate::config::invalidate_config_cache();
     guard
 }
@@ -900,6 +903,10 @@ fn restore_claude_mcp_env(guard: ClaudeMcpEnvGuard) {
     match guard.previous_disable {
         Some(value) => crate::env::set_var("JCODE_DISABLE_CLAUDE_MCP", value),
         None => crate::env::remove_var("JCODE_DISABLE_CLAUDE_MCP"),
+    }
+    match guard.previous_no_core {
+        Some(value) => crate::env::set_var("JCODE_NO_CORE_MCP", value),
+        None => crate::env::remove_var("JCODE_NO_CORE_MCP"),
     }
     crate::config::invalidate_config_cache();
 }
@@ -1002,4 +1009,98 @@ fn config_enabled_live_claude_mcp_without_env() {
         "[mcp_sources].live_claude = true must enable both live Claude sources"
     );
     assert!(config.servers.contains_key("jcode-only"));
+}
+
+/// The fork's core MCP server names, in seeding order.
+const CORE_MCP_SERVER_NAMES: [&str; 4] = [
+    "context-mode",
+    "ast-grep",
+    "codemap",
+    "grep-app-stdio",
+];
+
+#[test]
+fn core_mcp_servers_are_seeded_when_no_source_defines_them() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    for name in CORE_MCP_SERVER_NAMES {
+        assert!(
+            config.servers.contains_key(name),
+            "core server '{name}' must be seeded into an otherwise-empty config"
+        );
+    }
+    assert!(
+        !config.servers.contains_key("codebase-memory"),
+        "codebase-memory must never be seeded: jcode covers it natively"
+    );
+}
+
+#[test]
+fn user_defined_entry_wins_over_core_mcp_seeding() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+    std::fs::write(
+        env.home.path().join("mcp.json"),
+        r#"{"mcpServers":{"codemap":{"command":"my-codemap","args":["--mine"]}}}"#,
+    )
+    .expect("write jcode mcp config");
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    let codemap = config.servers.get("codemap").expect("codemap present");
+    assert_eq!(
+        codemap.command, "my-codemap",
+        "a user-defined entry must never be overwritten by core seeding"
+    );
+    assert_eq!(codemap.args, ["--mine"]);
+    assert!(codemap.env.is_empty());
+    // The remaining cores are still seeded around the user's definition.
+    assert!(config.servers.contains_key("context-mode"));
+    assert!(config.servers.contains_key("ast-grep"));
+    assert!(config.servers.contains_key("grep-app-stdio"));
+}
+
+#[test]
+fn core_mcp_seeding_disabled_by_env_override() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+    crate::env::set_var("JCODE_NO_CORE_MCP", "1");
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    for name in CORE_MCP_SERVER_NAMES {
+        assert!(
+            !config.servers.contains_key(name),
+            "JCODE_NO_CORE_MCP=1 must disable core seeding ('{name}' leaked)"
+        );
+    }
+}
+
+#[test]
+fn core_mcp_seeding_disabled_by_config() {
+    let _guard = crate::storage::lock_test_env();
+    let env = sandbox_claude_mcp_env();
+    std::fs::write(
+        env.home.path().join("config.toml"),
+        "[mcp_sources]\ncore_defaults = false\n",
+    )
+    .expect("write sandbox config.toml");
+    crate::config::invalidate_config_cache();
+
+    let config = McpConfig::load_for_dir(None);
+    restore_claude_mcp_env(env);
+
+    for name in CORE_MCP_SERVER_NAMES {
+        assert!(
+            !config.servers.contains_key(name),
+            "[mcp_sources].core_defaults = false must disable core seeding ('{name}' leaked)"
+        );
+    }
+    assert!(!config.servers.contains_key("codebase-memory"));
 }

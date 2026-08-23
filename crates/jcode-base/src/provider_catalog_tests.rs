@@ -1196,6 +1196,8 @@ fn open_weight_family_context_limits_match_published_windows() {
     assert_eq!(f("gpt-oss-120b"), Some(131_072));
     assert_eq!(f("llama-3.3-70b-instruct"), Some(131_072));
     assert_eq!(f("sonar-pro"), Some(128_000));
+    assert_eq!(f("ox-alpha"), Some(1_000_000));
+    assert_eq!(f("stealth/ox-alpha"), Some(1_000_000));
 
     // Unknown families stay unresolved so the dynamic cache/default can act.
     assert_eq!(f("some-unknown-model"), None);

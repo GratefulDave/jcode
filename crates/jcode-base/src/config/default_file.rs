@@ -615,6 +615,13 @@ swarm_max_concurrent_agents = 32
 # Env override: JCODE_ENABLE_CLAUDE_MCP=1. JCODE_DISABLE_CLAUDE_MCP=1 wins
 # over both this setting and the env override.
 # live_claude = false
+#
+# Seed the fork's embedded core MCP servers (context-mode, ast-grep, codemap,
+# grep-app-stdio) into the effective config when no loaded source defines a
+# server with the same name; user-defined entries always win. codebase-memory
+# is deliberately not seeded (jcode covers it natively). Default: true.
+# Env override: JCODE_NO_CORE_MCP=1 disables seeding entirely.
+# core_defaults = true
 
 [ambient]
 # Ambient mode: background agent that maintains your codebase
