@@ -31,15 +31,16 @@ cd ~/PycharmProjects/jcode        # your fork checkout, on your branch
 # 1. Commit first — committed hash = reproducible build label
 git add -p && git commit
 
-# 2. Build + publish + repoint current (first time: pin the tree explicitly)
-JCODE_REPO_DIR=$HOME/PycharmProjects/jcode jcode self-dev --build
-
-# 3. If sessions still behave like the old code:
-jcode server reload            # usually enough
-jcode server reload --force    # if reload false-negatives through symlinks
+# 2. Build + publish + repoint current + reload the daemon
+just publish
 ```
 
-Verify what is actually running:
+`just` lives in `~/.cargo/bin`. First-ever run from a foreign tree: prefix
+with `JCODE_REPO_DIR=$HOME/PycharmProjects/jcode`, or run
+`just publish` once from this checkout so the baked-in path flips here.
+
+Verify what is actually running (the `just up`/`publish` summary prints this
+too):
 
 ```bash
 readlink ~/.local/bin/jcode                       # -> builds/current/jcode
@@ -47,6 +48,7 @@ cat ~/.jcode/builds/current-version               # published version label
 pgrep -fl "jcode.*serve"                          # daemon pid
 lsof -p <daemon-pid> | awk '$4=="txt" && /versions/ {print $NF}'   # real inode
 ```
+
 
 If `lsof` shows an older `versions/<hash>` than `current-version`, the daemon
 is running stale code — use `server reload --force`.
@@ -115,26 +117,32 @@ log lines `Initialized SuperGrok provider from cached login` /
 
 `jcode update` never touches this checkout — its source-update path manages
 its own clone at `~/.jcode/builds/source/jcode`
-(crates/jcode-app-core/src/update.rs:103). Upstream sync is manual git:
+(crates/jcode-app-core/src/update.rs:103). Upstream sync is manual git,
+wrapped by the justfile:
 
 ```bash
 cd ~/PycharmProjects/jcode
-git fetch upstream
-git checkout master && git merge --ff-only upstream/master && git push origin master
-git checkout <feature-branch> && git merge master   # resolve conflicts here
-cargo test -p jcode-base --lib
-JCODE_REPO_DIR=$HOME/PycharmProjects/jcode jcode self-dev --build
-jcode server reload --force
+just up                     # sync upstream → gates → publish → daemon reload
+just up stages="sync"       # git-level sync only
+just publish                # rebuild + reload from the current tree
+just CANARY=1 up            # keep the canary TUI window open after publish
 ```
+
+`just up` fast-forwards or rebases fork `master` onto upstream (fork master
+only carries squashes of our branches, so divergence is expected and rebase
+is lease-protected), merges master into the current branch, refuses to build
+a conflicted tree, then publishes via self-dev and reloads the daemon,
+verifying the daemon inode matches the published version.
 
 - Fork `master` is the integration line (PRs from feature branches, squash
   merge). Upstream PR creation is permission-blocked for this account; drift
   is pull-only.
 - Expect conflicts where gates meet churn: `skill.rs`, `mcp/protocol.rs`.
   The gating regression tests (31 skill + 60 mcp) are the merge gate — red
-  after merge means upstream changed behavior a gate depends on.
+  after merge means upstream changed behavior a gate depends on. Run gates
+  with plain `just up` (no SKIP_TESTS).
 - Avoid `jcode update`: it repoints release channels away from the self-dev
-  build. If it runs anyway, one `self-dev --build` restores the fork build.
+  build. If it runs anyway, one `just publish` restores the fork build.
 - The baked-in source path follows whatever tree last published `current`.
   Installing a stable release flips it back; the compile-log lines always
   reveal which tree is building.
