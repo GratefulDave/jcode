@@ -920,13 +920,30 @@ pub struct SkillsConfig {
 /// fresh fork never inherits servers it did not ask for. Default OFF;
 /// environment variables override these settings (`JCODE_ENABLE_CLAUDE_MCP=1`,
 /// legacy kill switch `JCODE_DISABLE_CLAUDE_MCP=1` wins over both).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct McpSourcesConfig {
     /// Merge live Claude Code MCP sources (`~/.claude.json` global and
     /// per-project servers, plus the legacy `~/.claude/mcp.json`) on every
     /// load. Default: false. Env override: JCODE_ENABLE_CLAUDE_MCP=1.
     pub live_claude: bool,
+    /// Seed the fork's embedded core MCP servers (context-mode, ast-grep,
+    /// codemap, grep-app-stdio) into the effective config when no source
+    /// defines a server with that name. `codebase-memory` is deliberately not
+    /// seeded: jcode covers codebase memory natively. Default: true — this
+    /// diverges from the all-OFF style of `live_claude`, so `Default` is
+    /// implemented manually. Env override: JCODE_NO_CORE_MCP=1 disables
+    /// seeding entirely.
+    pub core_defaults: bool,
+}
+
+impl Default for McpSourcesConfig {
+    fn default() -> Self {
+        Self {
+            live_claude: false,
+            core_defaults: true,
+        }
+    }
 }
 
 /// Automatic end-of-turn code review configuration.
@@ -1657,14 +1674,26 @@ mod mcp_sources_config_tests {
     use super::*;
 
     #[test]
-    fn mcp_sources_config_defaults_off_and_tolerates_missing_fields() {
+    fn mcp_sources_config_live_claude_off_and_core_defaults_on() {
+        // Absent [mcp_sources] section parses to live_claude=false but
+        // core_defaults=true (manual Default diverges from the field derive).
         let empty: McpSourcesConfig = serde_json::from_str("{}").expect("parse empty object");
         assert!(!empty.live_claude);
+        assert!(empty.core_defaults);
 
         let explicit: McpSourcesConfig =
             serde_json::from_str(r#"{"live_claude": true}"#).expect("parse explicit object");
         assert!(explicit.live_claude);
+        assert!(
+            explicit.core_defaults,
+            "core seeding must stay on unless explicitly disabled"
+        );
+
+        let seeded_off: McpSourcesConfig =
+            serde_json::from_str(r#"{"core_defaults": false}"#).expect("parse core off");
+        assert!(!seeded_off.core_defaults);
 
         assert!(!McpSourcesConfig::default().live_claude);
+        assert!(McpSourcesConfig::default().core_defaults);
     }
 }

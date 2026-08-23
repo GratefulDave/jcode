@@ -48,6 +48,7 @@ pub(super) async fn resolve_debug_session(
     session_id: &Arc<RwLock<String>>,
     requested: Option<String>,
 ) -> Result<(String, Arc<Mutex<Agent>>)> {
+    let explicit = requested.is_some();
     let mut target = requested;
     if target.is_none() {
         let current = session_id.read().await.clone();
@@ -57,12 +58,15 @@ pub(super) async fn resolve_debug_session(
     }
 
     let sessions_guard = sessions.read().await;
-    if let Some(id) = target {
-        let agent = sessions_guard
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Unknown session_id '{}'", id))?;
-        return Ok((id, agent));
+    if let Some(id) = &target {
+        if let Some(agent) = sessions_guard.get(id).cloned() {
+            return Ok((id.clone(), agent));
+        }
+        // An explicitly requested id must fail loudly. An implicitly picked
+        // "current" may be stale after its client disconnected without
+        if explicit {
+            return Err(anyhow::anyhow!("Unknown session_id '{}'", id));
+        }
     }
 
     if sessions_guard.len() == 1
