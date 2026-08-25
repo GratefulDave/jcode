@@ -71,6 +71,12 @@ pub fn inferred_reasoning_efforts(
         return OPENROUTER_SELECTABLE_EFFORTS.to_vec();
     }
 
+    // SuperGrok (`xai-oauth`) uses the Responses `reasoning.effort` field with
+    // the OpenAI ladder. Match both the runtime name and the route api_method.
+    if provider.contains("xai-oauth") || model.starts_with("xai-oauth:") {
+        return OPENAI_SELECTABLE_EFFORTS.to_vec();
+    }
+
     if provider.contains("deepseek") || model.contains("deepseek") {
         return DEEPSEEK_SELECTABLE_EFFORTS.to_vec();
     }
@@ -81,7 +87,8 @@ pub fn inferred_reasoning_efforts(
         || model.starts_with("o4")
         || model.starts_with("o5");
     if provider.contains("openai-compatible") {
-        return if is_openai_model {
+        let is_local_thinking_profile = provider.contains(":omlx") || provider.contains(":mtplx");
+        return if is_openai_model || is_local_thinking_profile {
             OPENAI_SELECTABLE_EFFORTS.to_vec()
         } else {
             Vec::new()
@@ -134,6 +141,24 @@ mod tests {
             inferred_reasoning_efforts(Some("openai-compatible:custom"), Some("gpt-5.6")),
             OPENAI_SELECTABLE_EFFORTS,
             "direct OpenAI-compatible runtimes use the OpenAI reasoning_effort vocabulary"
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai-compatible:omlx"), Some("local-mlx-model")),
+            OPENAI_SELECTABLE_EFFORTS,
+            "built-in omlx profile supports OpenAI-style reasoning_effort"
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai-compatible:mtplx"), Some("local-mlx-model")),
+            OPENAI_SELECTABLE_EFFORTS,
+            "built-in mtplx profile supports OpenAI-style reasoning_effort"
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("xai-oauth"), Some("grok-4.6")),
+            OPENAI_SELECTABLE_EFFORTS
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("xai-oauth-responses"), Some("xai-oauth:grok-4.6")),
+            OPENAI_SELECTABLE_EFFORTS
         );
     }
 

@@ -913,7 +913,13 @@ impl OpenRouterProvider {
     }
 
     fn profile_supports_openai_reasoning_effort(profile_id: Option<&str>) -> bool {
-        matches!(profile_id, Some(id) if id.eq_ignore_ascii_case("zai"))
+        matches!(
+            profile_id,
+            Some(id)
+                if id.eq_ignore_ascii_case("zai")
+                    || id.eq_ignore_ascii_case("omlx")
+                    || id.eq_ignore_ascii_case("mtplx")
+        )
     }
 
     /// DeepSeek-family models accept the DeepSeek-style top-level

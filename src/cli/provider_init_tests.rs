@@ -52,6 +52,8 @@ fn test_provider_choice_arg_values() {
     assert_eq!(ProviderChoice::Celeris.as_arg_value(), "celeris");
     assert_eq!(ProviderChoice::Lmstudio.as_arg_value(), "lmstudio");
     assert_eq!(ProviderChoice::Ollama.as_arg_value(), "ollama");
+    assert_eq!(ProviderChoice::Omlx.as_arg_value(), "omlx");
+    assert_eq!(ProviderChoice::Mtplx.as_arg_value(), "mtplx");
     assert_eq!(ProviderChoice::Chutes.as_arg_value(), "chutes");
     assert_eq!(ProviderChoice::Cerebras.as_arg_value(), "cerebras");
     assert_eq!(
@@ -507,6 +509,14 @@ fn choice_for_login_provider_round_trips_openai_compatible_profiles() {
     assert_eq!(
         choice_for_login_provider(provider_catalog::LMSTUDIO_LOGIN_PROVIDER),
         Some(ProviderChoice::Lmstudio)
+    );
+    assert_eq!(
+        choice_for_login_provider(provider_catalog::OMLX_LOGIN_PROVIDER),
+        Some(ProviderChoice::Omlx)
+    );
+    assert_eq!(
+        choice_for_login_provider(provider_catalog::MTPLX_LOGIN_PROVIDER),
+        Some(ProviderChoice::Mtplx)
     );
     assert_eq!(
         choice_for_login_provider(provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER),

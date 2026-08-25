@@ -360,6 +360,28 @@ pub const OLLAMA_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: false,
 };
 
+pub const OMLX_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "omlx",
+    display_name: "OMLX",
+    api_base: "http://localhost:18790/v1",
+    api_key_env: "OMLX_API_KEY",
+    env_file: "omlx.env",
+    setup_url: "https://github.com/ml-explore/mlx-lm",
+    default_model: None,
+    requires_api_key: false,
+};
+
+pub const MTPLX_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "mtplx",
+    display_name: "MTPLX",
+    api_base: "http://localhost:18791/v1",
+    api_key_env: "MTPLX_API_KEY",
+    env_file: "mtplx.env",
+    setup_url: "https://github.com/ml-explore/mlx-lm",
+    default_model: None,
+    requires_api_key: false,
+};
+
 pub const CHUTES_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "chutes",
     display_name: "Chutes",
@@ -454,7 +476,7 @@ pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfi
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 39] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 41] = [
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
     ZAI_PROFILE,
@@ -493,6 +515,8 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 39] = [
     CELERIS_PROFILE,
     LMSTUDIO_PROFILE,
     OLLAMA_PROFILE,
+    OMLX_PROFILE,
+    MTPLX_PROFILE,
     OPENAI_COMPAT_PROFILE,
 ];
 
@@ -1058,6 +1082,32 @@ pub const OLLAMA_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(35), Some(35), Some(35), Some(35), Some(35)),
 };
 
+pub const OMLX_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "omlx",
+    display_name: "OMLX",
+    auth_kind: LoginProviderAuthKind::Local,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "local endpoint",
+    aliases: &[],
+    menu_detail: "local OpenAI-compatible endpoint",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(OMLX_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(40), Some(40), Some(40), Some(40), Some(40)),
+};
+
+pub const MTPLX_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "mtplx",
+    display_name: "MTPLX",
+    auth_kind: LoginProviderAuthKind::Local,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "local endpoint",
+    aliases: &[],
+    menu_detail: "local OpenAI-compatible endpoint",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(MTPLX_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(41), Some(41), Some(41), Some(41), Some(41)),
+};
+
 pub const OPENAI_COMPAT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "openai-compatible",
     display_name: "OpenAI-compatible",
@@ -1193,7 +1243,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 52] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 54] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
@@ -1239,6 +1289,8 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 52] = [
     CELERIS_LOGIN_PROVIDER,
     LMSTUDIO_LOGIN_PROVIDER,
     OLLAMA_LOGIN_PROVIDER,
+    OMLX_LOGIN_PROVIDER,
+    MTPLX_LOGIN_PROVIDER,
     OPENAI_COMPAT_LOGIN_PROVIDER,
     CURSOR_LOGIN_PROVIDER,
     COPILOT_LOGIN_PROVIDER,

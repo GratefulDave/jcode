@@ -527,6 +527,62 @@ mod tests {
     }
 
     #[test]
+    fn omlx_and_mtplx_profiles_are_local_openai_compatible_without_required_api_key() {
+        assert_eq!(OMLX_PROFILE.id, "omlx");
+        assert_eq!(OMLX_PROFILE.display_name, "OMLX");
+        assert_eq!(OMLX_PROFILE.api_base, "http://localhost:18790/v1");
+        assert_eq!(OMLX_PROFILE.api_key_env, "OMLX_API_KEY");
+        assert_eq!(OMLX_PROFILE.env_file, "omlx.env");
+        assert_eq!(OMLX_PROFILE.default_model, None);
+        const {
+            assert!(!OMLX_PROFILE.requires_api_key);
+        }
+
+        assert_eq!(MTPLX_PROFILE.id, "mtplx");
+        assert_eq!(MTPLX_PROFILE.display_name, "MTPLX");
+        assert_eq!(MTPLX_PROFILE.api_base, "http://localhost:18791/v1");
+        assert_eq!(MTPLX_PROFILE.api_key_env, "MTPLX_API_KEY");
+        assert_eq!(MTPLX_PROFILE.env_file, "mtplx.env");
+        assert_eq!(MTPLX_PROFILE.default_model, None);
+        const {
+            assert!(!MTPLX_PROFILE.requires_api_key);
+        }
+
+        assert_eq!(OMLX_LOGIN_PROVIDER.auth_kind, LoginProviderAuthKind::Local);
+        assert_eq!(OMLX_LOGIN_PROVIDER.auth_status_method, "local endpoint");
+        assert_eq!(
+            OMLX_LOGIN_PROVIDER.menu_detail,
+            "local OpenAI-compatible endpoint"
+        );
+        assert!(matches!(
+            OMLX_LOGIN_PROVIDER.target,
+            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "omlx"
+        ));
+        assert_eq!(
+            MTPLX_LOGIN_PROVIDER.auth_kind,
+            LoginProviderAuthKind::Local
+        );
+        assert_eq!(MTPLX_LOGIN_PROVIDER.auth_status_method, "local endpoint");
+        assert_eq!(
+            MTPLX_LOGIN_PROVIDER.menu_detail,
+            "local OpenAI-compatible endpoint"
+        );
+        assert!(matches!(
+            MTPLX_LOGIN_PROVIDER.target,
+            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "mtplx"
+        ));
+
+        assert_eq!(
+            resolve_login_provider("omlx").map(|provider| provider.id),
+            Some("omlx")
+        );
+        assert_eq!(
+            resolve_login_provider("mtplx").map(|provider| provider.id),
+            Some("mtplx")
+        );
+    }
+
+    #[test]
     fn matrix_login_provider_aliases_resolve_to_canonical_ids() {
         assert_eq!(
             resolve_login_provider("subscription").map(|provider| provider.id),

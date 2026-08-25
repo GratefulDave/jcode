@@ -156,6 +156,10 @@ fn inferred_reasoning_efforts_use_provider_specific_order_and_max_semantics() {
         ],
         "DeepSeek direct keeps max as a real provider level"
     );
+    assert_eq!(
+        inferred_reasoning_efforts(Some("xai-oauth"), Some("grok-4.6")),
+        jcode_provider_core::OPENAI_SELECTABLE_EFFORTS
+    );
     assert!(inferred_reasoning_efforts(Some("ollama"), Some("llama3")).is_empty());
 }
 

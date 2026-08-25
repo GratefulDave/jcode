@@ -343,6 +343,8 @@ jcode works with subscription-backed OAuth flows and many provider integrations,
 - **Meta Model API / Muse** (`jcode login --provider meta-muse`)
 - **LM Studio** (`jcode login --provider lmstudio`)
 - **Ollama** (`jcode login --provider ollama`)
+- **OMLX** (`jcode login --provider omlx`)
+- **MTPLX** (`jcode login --provider mtplx`)
 - **Custom OpenAI-compatible endpoint** (`jcode login --provider openai-compatible`)
 
 For custom OpenAI-compatible endpoints, jcode now prompts for the API base and supports local localhost servers without requiring an API key.
@@ -424,9 +426,15 @@ jcode --provider ollama --model llama3.2 run 'hello'
 # model identifier shown by LM Studio or by curl http://localhost:1234/v1/models.
 jcode login --provider lmstudio
 jcode --provider lmstudio --model '<model-id>' run 'hello'
+
+# OMLX / MTPLX: local OpenAI-compatible MLX servers.
+jcode login --provider omlx
+jcode --provider omlx --model '<model-id>' run 'hello'
+jcode login --provider mtplx
+jcode --provider mtplx --model '<model-id>' run 'hello'
 ```
 
-Ollama and LM Studio both expose OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints. jcode uses streaming chat completions, function/tool calling, and OpenAI-style image content for vision-capable local models. If a local server requires a token, enter it during `jcode login` or create a named profile with `--api-key-stdin`.
+Ollama, LM Studio, OMLX, and MTPLX all expose OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints. jcode uses streaming chat completions, function/tool calling, and OpenAI-style image content for vision-capable local models. If a local server requires a token, enter it during `jcode login` or create a named profile with `--api-key-stdin`.
 
 Useful flags:
 
@@ -615,7 +623,7 @@ The above image is the first page of provider logins
 
 - **Native / first-party style providers:** `claude`, `openai`, `copilot`, `gemini`, `azure`, `alibaba-coding-plan`
 - **Aggregator / compatibility providers:** `openrouter`, `orcarouter`, `openai-compatible`
-- **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `minimax`, `xai`, `xai-oauth` (SuperGrok), `lmstudio`, `ollama`, `chutes`, `cerebras`, `cursor`, `antigravity`, `google`
+- **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `minimax`, `xai`, `xai-oauth` (SuperGrok), `lmstudio`, `ollama`, `omlx`, `mtplx`, `chutes`, `cerebras`, `cursor`, `antigravity`, `google`
 
 Jcode also supports easy multi-account switching. Ran out of tokens on your first ChatGPT Pro subscription? /account and quickly switch to your second. 
 

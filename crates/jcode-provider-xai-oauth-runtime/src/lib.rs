@@ -31,7 +31,6 @@ const SEED_MODELS: &[&str] = &[
     "grok-code-fast-1",
 ];
 const INITIAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 type TokenResolver = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
@@ -42,6 +41,7 @@ pub struct XaiOauthProvider {
     token_resolver: Option<TokenResolver>,
     prompt_cache_key: Option<String>,
     fetched_models: Arc<RwLock<Vec<String>>>,
+    reasoning_effort: Arc<RwLock<Option<String>>>,
 }
 
 impl XaiOauthProvider {
@@ -68,6 +68,7 @@ impl XaiOauthProvider {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             fetched_models: Arc::new(RwLock::new(Vec::new())),
+            reasoning_effort: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -136,12 +137,40 @@ impl Default for XaiOauthProvider {
     }
 }
 
+fn normalize_xai_oauth_reasoning_effort(raw: &str) -> Result<Option<String>> {
+    let value = raw.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if jcode_provider_core::canonical_reasoning_effort(&value).is_some()
+        || jcode_base::prompt::is_swarm_effort(&value)
+    {
+        return Ok(Some(value));
+    }
+    anyhow::bail!(
+        "Unsupported xai-oauth reasoning effort '{raw}'; expected none|minimal|low|medium|high|xhigh|max|swarm|swarm-deep"
+    )
+}
+
+fn api_reasoning_effort(effort: Option<&str>) -> Option<&str> {
+    match effort.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("none") => None,
+        Some(value) if jcode_base::prompt::is_swarm_effort(value) => Some("max"),
+        Some(value) => Some(value),
+    }
+}
+
+fn reasoning_payload(effort: &str) -> Value {
+    json!({ "effort": effort, "summary": "auto" })
+}
+
 pub(crate) fn build_xai_oauth_response_request(
     model: &str,
     instructions: &str,
     input: &[Value],
     tools: &[Value],
     prompt_cache_key: Option<&str>,
+    reasoning_effort: Option<&str>,
 ) -> Value {
     let mut request = json!({
         "model": model,
@@ -154,6 +183,9 @@ pub(crate) fn build_xai_oauth_response_request(
     });
     if !instructions.trim().is_empty() {
         request["instructions"] = json!(instructions);
+    }
+    if let Some(effort) = api_reasoning_effort(reasoning_effort) {
+        request["reasoning"] = reasoning_payload(effort);
     }
     if tools.is_empty() {
         request
@@ -287,17 +319,24 @@ async fn stream_xai_oauth_response(
         }))
         .await;
 
+    let request_effort = request
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str);
+    let stream_idle_timeout =
+        jcode_base::provider::stream_idle_timeout_for_effort(request_effort);
+
     let mut stream = OpenAIResponsesStream::new_with_mode(
         response.bytes_stream(),
         OpenAiResponseParseMode { xai_oauth: true },
     );
     loop {
-        let next = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
+        let next = match tokio::time::timeout(stream_idle_timeout, stream.next()).await {
             Ok(item) => item,
             Err(_) => {
                 anyhow::bail!(
                     "xai-oauth stream idle timeout after {}s",
-                    STREAM_IDLE_TIMEOUT.as_secs()
+                    stream_idle_timeout.as_secs()
                 );
             }
         };
@@ -332,12 +371,14 @@ impl Provider for XaiOauthProvider {
         let input = build_responses_input(messages);
         let api_tools = build_tools_for_xai_oauth(tools);
         let prompt_cache_key = self.prompt_cache_key(resume_session_id);
+        let reasoning_effort = self.reasoning_effort();
         let request = build_xai_oauth_response_request(
             &model,
             system,
             &input,
             &api_tools,
             prompt_cache_key.as_deref(),
+            reasoning_effort.as_deref(),
         );
 
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
@@ -357,6 +398,26 @@ impl Provider for XaiOauthProvider {
             }
         });
         Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+
+    fn reasoning_effort(&self) -> Option<String> {
+        self.reasoning_effort
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
+        let normalized = normalize_xai_oauth_reasoning_effort(effort)?;
+        *self
+            .reasoning_effort
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = normalized;
+        Ok(())
+    }
+
+    fn available_efforts(&self) -> Vec<&'static str> {
+        jcode_provider_core::OPENAI_SELECTABLE_EFFORTS.to_vec()
     }
 
     fn name(&self) -> &str {
@@ -453,6 +514,7 @@ impl Provider for XaiOauthProvider {
             token_resolver: self.token_resolver.clone(),
             prompt_cache_key: self.prompt_cache_key.clone(),
             fetched_models: self.fetched_models.clone(),
+            reasoning_effort: Arc::new(RwLock::new(self.reasoning_effort())),
         })
     }
 }
@@ -474,6 +536,7 @@ mod tests {
             &[],
             &[json!({"type":"function","name":"read"})],
             None,
+            None,
         );
         assert_eq!(with_tools["parallel_tool_calls"], json!(true));
         assert_eq!(with_tools["tool_choice"], json!("auto"));
@@ -484,10 +547,70 @@ mod tests {
         assert!(with_tools.get("presence_penalty").is_none());
         assert!(with_tools.get("frequency_penalty").is_none());
 
-        let empty = build_xai_oauth_response_request("grok-4.6", "", &[], &[], Some("sess"));
+        let empty = build_xai_oauth_response_request("grok-4.6", "", &[], &[], Some("sess"), None);
         assert_eq!(empty["parallel_tool_calls"], json!(false));
         assert!(empty.get("tool_choice").is_none());
         assert_eq!(empty["prompt_cache_key"], json!("sess"));
+        assert!(empty.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn set_reasoning_effort_accepts_xai_ladder_and_rejects_unknown() {
+        let provider = XaiOauthProvider::new();
+        assert!(provider.available_efforts().contains(&"high"));
+        assert!(provider.available_efforts().contains(&"max"));
+        provider
+            .set_reasoning_effort("high")
+            .expect("xai-oauth must accept thinking effort");
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+        provider.set_reasoning_effort("swarm").unwrap();
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("swarm"));
+        let err = provider
+            .set_reasoning_effort("ultra")
+            .expect_err("unknown effort must fail");
+        assert!(
+            err.to_string().contains("Unsupported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn request_includes_reasoning_effort_and_maps_swarm_to_max() {
+        let high = build_xai_oauth_response_request(
+            "grok-4.6",
+            "",
+            &[],
+            &[],
+            None,
+            Some("high"),
+        );
+        assert_eq!(
+            high["reasoning"],
+            json!({ "effort": "high", "summary": "auto" })
+        );
+
+        let none = build_xai_oauth_response_request(
+            "grok-4.6",
+            "",
+            &[],
+            &[],
+            None,
+            Some("none"),
+        );
+        assert!(none.get("reasoning").is_none());
+
+        let swarm = build_xai_oauth_response_request(
+            "grok-4.6",
+            "",
+            &[],
+            &[],
+            None,
+            Some("swarm"),
+        );
+        assert_eq!(
+            swarm["reasoning"],
+            json!({ "effort": "max", "summary": "auto" })
+        );
     }
     #[test]
     fn seed_models_exclude_grok_build() {
@@ -530,7 +653,7 @@ mod tests {
         }];
         let tools = build_tools_for_xai_oauth(&defs);
         assert!(tools[0]["parameters"].get("anyOf").is_none());
-        let request = build_xai_oauth_response_request("grok-4.6", "", &[], &tools, None);
+        let request = build_xai_oauth_response_request("grok-4.6", "", &[], &tools, None, None);
         assert_eq!(request["parallel_tool_calls"], json!(true));
     }
 

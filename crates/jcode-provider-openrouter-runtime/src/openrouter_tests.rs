@@ -1502,6 +1502,31 @@ fn non_deepseek_compatible_profile_does_not_expose_reasoning_effort() {
 }
 
 #[test]
+fn local_omlx_and_mtplx_profiles_expose_openai_reasoning_effort_for_any_model() {
+    for profile_id in ["omlx", "mtplx"] {
+        let provider = OpenRouterProvider {
+            profile_id: Some(profile_id.to_string()),
+            model: Arc::new(RwLock::new("local-mlx-model".to_string())),
+            supports_provider_features: false,
+            send_openrouter_headers: false,
+            ..make_custom_compatible_provider()
+        };
+
+        assert_eq!(
+            provider.available_efforts(),
+            jcode_provider_core::OPENAI_SELECTABLE_EFFORTS,
+            "{profile_id} should expose the OpenAI effort ladder"
+        );
+        provider
+            .set_reasoning_effort("high")
+            .unwrap_or_else(|error| {
+                panic!("{profile_id} should accept high effort for a non-GPT model: {error}")
+            });
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+    }
+}
+
+#[test]
 fn openrouter_chat_request_sends_unified_reasoning_effort() {
     let (api_base, request_rx) = spawn_single_response_chat_server();
     let provider = OpenRouterProvider {
@@ -1760,6 +1785,110 @@ fn direct_openai_compatible_chat_request_preserves_max_reasoning_effort() {
     assert!(
         request.contains(r#""reasoning_effort":"max""#),
         "direct compatible request must preserve OpenAI max: {request}"
+    );
+}
+
+#[test]
+fn local_omlx_chat_request_sends_top_level_reasoning_effort() {
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let provider = OpenRouterProvider {
+        api_base,
+        model: Arc::new(RwLock::new("local-mlx-model".to_string())),
+        profile_id: Some("omlx".to_string()),
+        supports_provider_features: false,
+        supports_model_catalog: false,
+        send_openrouter_headers: false,
+        ..make_custom_compatible_provider()
+    };
+    provider
+        .set_reasoning_effort("high")
+        .expect("omlx should accept high effort for a non-GPT model");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning_effort":"high""#),
+        "omlx request should include top-level reasoning_effort: {request}"
+    );
+    assert!(
+        !request.contains(r#""reasoning":{"effort""#),
+        "omlx should not send OpenRouter unified reasoning: {request}"
+    );
+}
+
+#[test]
+fn local_mtplx_chat_request_sends_top_level_reasoning_effort() {
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let provider = OpenRouterProvider {
+        api_base,
+        model: Arc::new(RwLock::new("local-mlx-model".to_string())),
+        profile_id: Some("mtplx".to_string()),
+        supports_provider_features: false,
+        supports_model_catalog: false,
+        send_openrouter_headers: false,
+        ..make_custom_compatible_provider()
+    };
+    provider
+        .set_reasoning_effort("high")
+        .expect("mtplx should accept high effort for a non-GPT model");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning_effort":"high""#),
+        "mtplx request should include top-level reasoning_effort: {request}"
+    );
+    assert!(
+        !request.contains(r#""reasoning":{"effort""#),
+        "mtplx should not send OpenRouter unified reasoning: {request}"
     );
 }
 
