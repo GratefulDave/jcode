@@ -189,11 +189,22 @@ impl Tool for ReadTool {
 
         // Read file
         let content = tokio::fs::read_to_string(&path).await?;
+        let snapshot_key = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.clone())
+            .to_string_lossy()
+            .into_owned();
+        let display = ctx
+            .working_dir
+            .as_deref()
+            .map(|cwd| jcode_hashline::display_path(cwd, &path))
+            .unwrap_or_else(|| params.file_path.clone());
 
         // Single-pass: count lines while building output
         let mut output = String::with_capacity(range.limit.min(2000) * 80);
         let mut total_lines = 0usize;
         let mut truncated_line_count = 0usize;
+        let mut seen_lines = Vec::new();
         let end_exclusive = range.offset + range.limit;
         {
             use std::fmt::Write;
@@ -203,20 +214,24 @@ impl Tool for ReadTool {
                     continue;
                 }
                 if i >= end_exclusive {
-                    // Still need to count remaining lines
                     continue;
                 }
                 let line_num = i + 1;
+                seen_lines.push(line_num);
                 if line.len() > MAX_LINE_LEN {
                     truncated_line_count += 1;
                     let _ = writeln!(
                         output,
-                        "{:>5}\t{}...",
+                        "{}:{}...",
                         line_num,
                         crate::util::truncate_str(line, MAX_LINE_LEN)
                     );
                 } else {
-                    let _ = writeln!(output, "{:>5}\t{}", line_num, line);
+                    let _ = writeln!(
+                        output,
+                        "{}",
+                        jcode_hashline::format_numbered_line(line_num, line)
+                    );
                 }
             }
         }
@@ -264,7 +279,21 @@ impl Tool for ReadTool {
             ));
         }
 
-        if output.is_empty() {
+        let tag = jcode_hashline::record_snapshot(
+            &ctx.session_id,
+            &snapshot_key,
+            &content,
+            Some(seen_lines),
+        );
+        if let Some(tag) = tag {
+            let header = format!(
+                "{}\n",
+                jcode_hashline::format_hashline_header(&display, &tag)
+            );
+            output.insert_str(0, &header);
+        }
+
+        if output.trim().is_empty() {
             Ok(ToolOutput::new("(empty file)"))
         } else {
             Ok(ToolOutput::new(output))

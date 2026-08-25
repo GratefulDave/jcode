@@ -932,6 +932,7 @@ impl Agent {
             crate::telemetry::SessionEndReason::NormalExit,
         );
         self.fire_session_lifecycle_hook("session_end", "close");
+        jcode_hashline::clear_session(&self.session.id);
     }
 
     /// Fire a session lifecycle observer hook (`session_start`/`session_end`).
@@ -962,6 +963,7 @@ impl Agent {
             &self.provider.model(),
             crate::telemetry::SessionEndReason::Unknown,
         );
+        jcode_hashline::clear_session(&self.session.id);
     }
 
     fn upload_transcript_telemetry(&mut self, end_reason: crate::telemetry::SessionEndReason) {

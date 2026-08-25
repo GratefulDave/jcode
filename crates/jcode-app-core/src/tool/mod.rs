@@ -103,6 +103,7 @@ pub(crate) fn clear_session_tool_policy(session_id: &str) {
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     policies.remove(session_id);
+    jcode_hashline::clear_session(session_id);
 }
 
 fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {

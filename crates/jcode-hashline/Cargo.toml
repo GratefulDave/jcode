@@ -1,0 +1,20 @@
+[package]
+name = "jcode-hashline"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Line-anchored hashline patch language: content-hash tags, PUT/CUT/REM/MV, stale-anchor reject"
+
+[lib]
+name = "jcode_hashline"
+path = "src/lib.rs"
+
+[dependencies]
+similar = "2"
+thiserror = "2"
+xxhash-rust = { version = "0.8", features = ["xxh32"] }
+jcode-command-risk = { path = "../jcode-command-risk" }
+
+[dev-dependencies]
+tempfile = "3"
+parking_lot = "0.12"

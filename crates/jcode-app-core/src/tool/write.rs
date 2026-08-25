@@ -56,6 +56,7 @@ impl Tool for WriteTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: WriteInput = serde_json::from_value(input)?;
+        let content = jcode_hashline::strip_write_content(&params.content);
 
         let path = ctx.resolve_path(Path::new(&params.file_path));
 
@@ -75,14 +76,14 @@ impl Tool for WriteTool {
         };
 
         // Write the file
-        tokio::fs::write(&path, &params.content).await?;
+        tokio::fs::write(&path, &content).await?;
 
-        let _new_len = params.content.len();
-        let line_count = params.content.lines().count();
+        let _new_len = content.len();
+        let line_count = content.lines().count();
         let diff = if let Some(old) = old_content.as_deref() {
-            generate_diff_summary(old, &params.content)
+            generate_diff_summary(old, &content)
         } else {
-            generate_diff_summary("", &params.content)
+            generate_diff_summary("", &content)
         };
         let detail = build_file_touch_preview(&diff);
 
@@ -112,23 +113,38 @@ impl Tool for WriteTool {
                 diff
             )
         } else {
-            // For new files, show all lines as additions
-            let diff = generate_diff_summary("", &params.content);
+            let diff = generate_diff_summary("", &content);
             format!(
                 "Created {} ({} lines):\n{}",
                 params.file_path, line_count, diff
             )
         };
 
-        // A write that lands on the active config.toml states exactly which
-        // settings changed and whether they are live, so neither the agent nor
-        // the user has to guess whether the edit took effect.
         super::config_edit_notice::append_config_edit_notice(
             &mut body,
             &path,
             old_content.as_deref().unwrap_or(""),
-            &params.content,
+            &content,
         );
+
+        let snapshot_key = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.clone())
+            .to_string_lossy()
+            .into_owned();
+        let display = ctx
+            .working_dir
+            .as_deref()
+            .map(|cwd| jcode_hashline::display_path(cwd, &path))
+            .unwrap_or_else(|| params.file_path.clone());
+        if let Some(tag) =
+            jcode_hashline::record_snapshot(&ctx.session_id, &snapshot_key, &content, None::<[usize; 0]>)
+        {
+            body.insert_str(
+                0,
+                &format!("{}\n", jcode_hashline::format_hashline_header(&display, &tag)),
+            );
+        }
 
         Ok(ToolOutput::new(body).with_title(params.file_path.clone()))
     }

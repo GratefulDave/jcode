@@ -22,9 +22,15 @@ impl EditTool {
 struct EditInput {
     #[serde(default)]
     intent: Option<String>,
-    file_path: String,
-    old_string: String,
-    new_string: String,
+    /// Hashline patch. Preferred over old_string/new_string.
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    old_string: Option<String>,
+    #[serde(default)]
+    new_string: Option<String>,
     #[serde(default)]
     replace_all: bool,
 }
@@ -36,30 +42,33 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace text in a file."
+        "Edit a file via a hashline `[PATH#TAG]` patch or old_string/new_string."
     }
 
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["file_path", "old_string", "new_string"],
             "properties": {
                 "intent": super::intent_schema_property(),
+                "input": {
+                    "type": "string",
+                    "description": "Hashline patch [PATH#TAG]: PUT/CUT/REM/MV ops; TAG from latest read/edit; body rows start with +"
+                },
                 "file_path": {
                     "type": "string",
-                    "description": "File path."
+                    "description": "File path for old_string/new_string fallback."
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "Text to replace."
+                    "description": "Text to replace when not using hashline input."
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "Replacement text."
+                    "description": "Replacement text when not using hashline input."
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Replace all matches."
+                    "description": "Replace all matches for old_string."
                 }
             }
         })
@@ -67,27 +76,44 @@ impl Tool for EditTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: EditInput = serde_json::from_value(input)?;
+        if let Some(patch) = params
+            .input
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return execute_hashline(patch, params.intent.as_deref(), &ctx);
+        }
+        let file_path = params.file_path.ok_or_else(|| {
+            anyhow::anyhow!("edit needs hashline `input` or file_path + old_string + new_string")
+        })?;
+        let old_string = params.old_string.ok_or_else(|| {
+            anyhow::anyhow!("edit needs hashline `input` or file_path + old_string + new_string")
+        })?;
+        let new_string = params.new_string.ok_or_else(|| {
+            anyhow::anyhow!("edit needs hashline `input` or file_path + old_string + new_string")
+        })?;
 
-        if params.old_string == params.new_string {
+        if old_string == new_string {
             return Err(anyhow::anyhow!(
                 "old_string and new_string must be different"
             ));
         }
 
-        let path = ctx.resolve_path(Path::new(&params.file_path));
+        let path = ctx.resolve_path(Path::new(&file_path));
 
         if !path.exists() {
-            return Err(anyhow::anyhow!("File not found: {}", params.file_path));
+            return Err(anyhow::anyhow!("File not found: {}", file_path));
         }
 
         let content = tokio::fs::read_to_string(&path).await?;
 
         // Count occurrences
-        let occurrences = content.matches(&params.old_string).count();
+        let occurrences = content.matches(&old_string).count();
 
         if occurrences == 0 {
             // Try flexible matching
-            return try_flexible_match(&content, &params.old_string, &params.file_path);
+            return try_flexible_match(&content, &old_string, &file_path);
         }
 
         if occurrences > 1 && !params.replace_all {
@@ -101,22 +127,22 @@ impl Tool for EditTool {
 
         // Perform replacement
         let new_content = if params.replace_all {
-            content.replace(&params.old_string, &params.new_string)
+            content.replace(&old_string, &new_string)
         } else {
-            content.replacen(&params.old_string, &params.new_string, 1)
+            content.replacen(&old_string, &new_string, 1)
         };
 
         // Find line number where edit starts
-        let start_line = find_line_number(&content, &params.old_string);
+        let start_line = find_line_number(&content, &old_string);
 
         // Write back
         tokio::fs::write(&path, &new_content).await?;
 
         // Generate a diff with line numbers
-        let diff = generate_diff(&params.old_string, &params.new_string, start_line);
+        let diff = generate_diff(&old_string, &new_string, start_line);
 
         // Publish file touch event for swarm coordination
-        let end_line = start_line + params.new_string.lines().count().saturating_sub(1);
+        let end_line = start_line + new_string.lines().count().saturating_sub(1);
         let detail = build_file_touch_preview(&diff);
         Bus::global().publish(BusEvent::FileTouch(FileTouch {
             session_id: ctx.session_id.clone(),
@@ -137,12 +163,12 @@ impl Tool for EditTool {
         }));
 
         // Extract context around the edit to help with consecutive edits
-        let end_line = start_line + params.new_string.lines().count().saturating_sub(1);
+        let end_line = start_line + new_string.lines().count().saturating_sub(1);
         let context = extract_context(&new_content, start_line, end_line, 3);
 
         let mut body = format!(
             "Edited {}: replaced {} occurrence(s)\n{}\n\nContext after edit (lines {}-{}):\n{}",
-            params.file_path, occurrences, diff, context.0, context.1, context.2
+            file_path, occurrences, diff, context.0, context.1, context.2
         );
         super::config_edit_notice::append_config_edit_notice(
             &mut body,
@@ -151,9 +177,97 @@ impl Tool for EditTool {
             &new_content,
         );
 
-        Ok(ToolOutput::new(body).with_title(params.file_path.clone()))
+        Ok(ToolOutput::new(body).with_title(file_path))
     }
 }
+
+fn execute_hashline(
+    input: &str,
+    intent: Option<&str>,
+    ctx: &ToolContext,
+) -> Result<ToolOutput> {
+    let patch = jcode_hashline::parse_input(input).map_err(|err| anyhow::anyhow!("{err}"))?;
+    if patch.sections.is_empty() {
+        return Err(anyhow::anyhow!(
+            "hashline input needs at least one [PATH#TAG] section"
+        ));
+    }
+    let cwd = ctx
+        .working_dir
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| Path::new(".").to_path_buf());
+    let config_watch = super::config_edit_notice::ConfigEditWatch::begin();
+    let results = jcode_hashline::with_session(&ctx.session_id, |store, clipboard| {
+        jcode_hashline::apply_patch_to_disk(&patch, store, clipboard, &cwd, true)
+    })
+    .map_err(|err| anyhow::anyhow!("{err}"))?;
+
+    let mut body = String::new();
+    let mut title = None;
+    for result in &results {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&result.header);
+        body.push('\n');
+        if result.op == "delete" {
+            body.push_str("deleted file\n");
+        } else if result.op == "noop" {
+            body.push_str("no changes\n");
+        } else {
+            if let Some(dest) = &result.move_dest {
+                body.push_str(&format!("moved to {dest}\n"));
+            }
+            for resolution in &result.block_resolutions {
+                body.push_str(&format!(
+                    "PUT {}*: → resolved lines {}-{}\n",
+                    resolution.line, resolution.start, resolution.end
+                ));
+            }
+            if let Some(line) = result.first_changed_line {
+                body.push_str(&format!("first changed line {line}\n"));
+            }
+            let preview = generate_changed_span_diff(&result.before, &result.after);
+            if !preview.is_empty() {
+                body.push_str(&preview);
+                if !preview.ends_with('\n') {
+                    body.push('\n');
+                }
+            }
+        }
+        if !result.warnings.is_empty() {
+            body.push_str("Warnings:\n");
+            for warning in &result.warnings {
+                body.push_str(warning);
+                body.push('\n');
+            }
+        }
+        title.get_or_insert_with(|| result.path.clone());
+        let dest = result
+            .move_dest
+            .as_deref()
+            .unwrap_or(result.path.as_str());
+        let dest_path = ctx.resolve_path(Path::new(dest));
+        Bus::global().publish(BusEvent::FileTouch(FileTouch {
+            session_id: ctx.session_id.clone(),
+            path: dest_path,
+            op: FileOp::Edit,
+            intent: intent
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty()),
+            summary: Some(format!("{} {}", result.op, dest)),
+            detail: None,
+        }));
+    }
+    config_watch.finish(&mut body);
+    let mut output = ToolOutput::new(body);
+    if let Some(title) = title {
+        output = output.with_title(title);
+    }
+    Ok(output)
+}
+
 
 /// Find the 1-based line number where a substring starts
 fn find_line_number(content: &str, substring: &str) -> usize {
@@ -208,6 +322,42 @@ fn generate_diff(old: &str, new: &str, start_line: usize) -> String {
         output.trim_end().to_string()
     }
 }
+
+const HASHLINE_DIFF_MAX_LINES: usize = 30;
+
+fn changed_span(before: &str, after: &str) -> (String, String, usize) {
+    let old: Vec<&str> = before.lines().collect();
+    let new: Vec<&str> = after.lines().collect();
+    let mut start = 0;
+    while start < old.len() && start < new.len() && old[start] == new[start] {
+        start += 1;
+    }
+    let mut old_end = old.len();
+    let mut new_end = new.len();
+    while old_end > start && new_end > start && old[old_end - 1] == new[new_end - 1] {
+        old_end -= 1;
+        new_end -= 1;
+    }
+    (
+        old[start..old_end].join("\n"),
+        new[start..new_end].join("\n"),
+        start + 1,
+    )
+}
+
+fn generate_changed_span_diff(before: &str, after: &str) -> String {
+    let (old, new, start) = changed_span(before, after);
+    let diff = generate_diff(&old, &new, start);
+    let mut lines: Vec<&str> = diff.lines().collect();
+    if lines.len() <= HASHLINE_DIFF_MAX_LINES {
+        return diff;
+    }
+    lines.truncate(HASHLINE_DIFF_MAX_LINES);
+    let mut out = lines.join("\n");
+    out.push_str("\n...");
+    out
+}
+
 
 fn build_file_touch_preview(diff: &str) -> Option<String> {
     let trimmed = diff.trim();
@@ -359,6 +509,38 @@ mod tests {
     }
 
     #[test]
+    fn test_changed_span_skips_unchanged_head() {
+        let before = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let after = before.replace("line 10", "changed 10");
+        let (old, new, start) = changed_span(&before, &after);
+        assert_eq!(start, 10);
+        let diff = generate_changed_span_diff(&before, &after);
+        // Exact: only line 10 changed, so the span diff is exactly two rows.
+        // (Substring checks cannot work here: "10- line 10" contains "line 1".)
+        assert_eq!(diff, "10- line 10\n10+ changed 10");
+    }
+
+    #[test]
+    fn test_changed_span_diff_caps() {
+        let before = (1..=80)
+            .map(|i| format!("old {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let after = (1..=80)
+            .map(|i| format!("new {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let diff = generate_changed_span_diff(&before, &after);
+        let lines = diff.lines().count();
+        assert!(lines <= HASHLINE_DIFF_MAX_LINES + 1, "{lines} {diff}");
+        assert!(diff.contains("..."), "{diff}");
+    }
+
+
+    #[test]
     fn test_generate_diff_line_number_format() {
         let old = "old";
         let new = "new";
@@ -438,5 +620,118 @@ mod tests {
         assert_eq!(end, 5, "Should clamp to last line");
         assert!(ctx.contains("line 3"), "Should include line 3");
         assert!(ctx.contains("line 5"), "Should include line 5");
+    }
+
+    fn test_ctx(working_dir: &std::path::Path) -> ToolContext {
+        ToolContext {
+            session_id: "hashline-edit".to_string(),
+            message_id: "m".to_string(),
+            tool_call_id: "c".to_string(),
+            working_dir: Some(working_dir.to_path_buf()),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
+        }
+    }
+
+    #[tokio::test]
+    async fn hashline_edit_applies_fresh_tag_and_rejects_stale() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("greet.py");
+        std::fs::write(&path, "def greet(name):\n    print(name)\n").unwrap();
+        let ctx = test_ctx(temp.path());
+        let key = path.canonicalize().unwrap().to_string_lossy().into_owned();
+        let tag = jcode_hashline::record_snapshot(
+            &ctx.session_id,
+            &key,
+            "def greet(name):\n    print(name)\n",
+            Some([1, 2]),
+        )
+        .expect("tag");
+        let tool = EditTool::new();
+        let output = tool
+            .execute(
+                serde_json::json!({
+                    "input": format!("[greet.py#{tag}]\nPUT 2.=2:\n+    print(f\"hi {{name}}\")")
+                }),
+                ctx.clone(),
+            )
+            .await
+            .expect("fresh hashline should apply");
+        assert!(
+            output.output.contains('#'),
+            "reminted header missing: {}",
+            output.output
+        );
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("print(f\"hi {name}\")"));
+
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "input": format!("[greet.py#{tag}]\nPUT 2.=2:\n+    pass")
+                }),
+                ctx,
+            )
+            .await
+            .expect_err("stale tag must reject");
+        assert!(err.to_string().contains("stale"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn old_string_fallback_still_works() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("note.txt");
+        std::fs::write(&path, "hello world\n").unwrap();
+        let tool = EditTool::new();
+        let output = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": "note.txt",
+                    "old_string": "hello world",
+                    "new_string": "hello rust"
+                }),
+                test_ctx(temp.path()),
+            )
+            .await
+            .expect("fallback edit");
+        assert!(output.output.contains("hello rust") || output.output.contains("replaced"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello rust\n");
+    }
+
+    #[tokio::test]
+    async fn empty_file_read_then_edit_round_trips() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("empty.txt");
+        std::fs::write(&path, "").unwrap();
+
+        // Read first: the tool must mint a tag even for an empty file.
+        let read = crate::tool::read::ReadTool
+            .execute(
+                serde_json::json!({ "file_path": "empty.txt" }),
+                test_ctx(temp.path()),
+            )
+            .await
+            .expect("read empty file");
+        let tag = read
+            .output
+            .lines()
+            .next()
+            .and_then(|line| line.trim().trim_start_matches('[').trim_end_matches(']').split('#').nth(1))
+            .expect("read of an empty file must return a hashline tag")
+            .to_string();
+
+        // Edit second: insert into the file using that tag.
+        let edit = EditTool::new();
+        edit.execute(
+            serde_json::json!({
+                "input": format!("[empty.txt#{tag}]\nPUT <1:\n+first line")
+            }),
+            test_ctx(temp.path()),
+        )
+        .await
+        .expect("inserting into an empty file should apply");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first line\n");
     }
 }
