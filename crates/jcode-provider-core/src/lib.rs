@@ -709,6 +709,8 @@ pub enum RuntimeKey {
     Bedrock,
     Antigravity,
     CodeAssistOAuth,
+    XaiOauth,
+    GrokBuild,
     RemoteCatalog,
     Current,
     Other(String),
@@ -731,6 +733,8 @@ impl RuntimeKey {
             ModelRouteApiMethod::Bedrock => Self::Bedrock,
             ModelRouteApiMethod::CodeAssistOAuth => Self::CodeAssistOAuth,
             ModelRouteApiMethod::AntigravityHttps => Self::Antigravity,
+            ModelRouteApiMethod::XaiOauth => Self::XaiOauth,
+            ModelRouteApiMethod::GrokBuild => Self::GrokBuild,
             ModelRouteApiMethod::RemoteCatalog => Self::RemoteCatalog,
             ModelRouteApiMethod::Current => Self::Current,
             ModelRouteApiMethod::Other(method) => Self::Other(method.clone()),
@@ -755,6 +759,8 @@ impl RuntimeKey {
             Self::Bedrock => "bedrock".to_string(),
             Self::Antigravity => "antigravity".to_string(),
             Self::CodeAssistOAuth => "code-assist-oauth".to_string(),
+            Self::XaiOauth => "xai-oauth".to_string(),
+            Self::GrokBuild => "grok-build".to_string(),
             Self::RemoteCatalog => "remote-catalog".to_string(),
             Self::Current => "current".to_string(),
             Self::Other(value) => value.clone(),
@@ -826,6 +832,20 @@ impl RouteSelection {
             RuntimeKey::Cursor => format!("cursor:{model}"),
             RuntimeKey::Bedrock => format!("bedrock:{model}"),
             RuntimeKey::Antigravity => format!("antigravity:{model}"),
+            RuntimeKey::XaiOauth => {
+                if model.starts_with("xai-oauth:") {
+                    model.to_string()
+                } else {
+                    format!("xai-oauth:{model}")
+                }
+            }
+            RuntimeKey::GrokBuild => {
+                if model.starts_with("grok-build:") {
+                    model.to_string()
+                } else {
+                    format!("grok-build:{model}")
+                }
+            }
             RuntimeKey::Gemini
             | RuntimeKey::CodeAssistOAuth
             | RuntimeKey::RemoteCatalog
@@ -867,6 +887,8 @@ pub enum ModelRouteApiMethod {
     Bedrock,
     CodeAssistOAuth,
     AntigravityHttps,
+    XaiOauth,
+    GrokBuild,
     RemoteCatalog,
     Current,
     Other(String),
@@ -902,6 +924,8 @@ impl ModelRouteApiMethod {
             "bedrock" => Self::Bedrock,
             "code-assist-oauth" => Self::CodeAssistOAuth,
             "https" => Self::AntigravityHttps,
+            "xai-oauth-responses" | "xai-oauth" => Self::XaiOauth,
+            "grok-build-acp" | "grok-build" => Self::GrokBuild,
             "remote-catalog" => Self::RemoteCatalog,
             "current" => Self::Current,
             _ => {
@@ -971,6 +995,8 @@ impl ModelRouteApiMethod {
             Self::Cursor => "cursor".to_string(),
             Self::Bedrock => "bedrock".to_string(),
             Self::AntigravityHttps => "https".to_string(),
+            Self::XaiOauth => "oauth".to_string(),
+            Self::GrokBuild => "grok-build".to_string(),
             Self::RemoteCatalog => "remote-catalog".to_string(),
             Self::Current => "current".to_string(),
             Self::Other(method) => method
@@ -1638,5 +1664,23 @@ mod tests {
             }
         );
         assert_eq!(selection.provider_label, "NVIDIA NIM");
+    }
+
+    #[test]
+    fn xai_oauth_route_keeps_prefixed_model_spec() {
+        let selection = RouteSelection::from_model_route(&ModelRoute {
+            model: "xai-oauth:grok-4.6".to_string(),
+            provider: "xAI Grok OAuth".to_string(),
+            api_method: "xai-oauth-responses".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        });
+        assert_eq!(selection.runtime_key, RuntimeKey::XaiOauth);
+        assert_eq!(selection.routed_model_spec(), "xai-oauth:grok-4.6");
+        assert_eq!(
+            ModelRouteApiMethod::parse("xai-oauth-responses").display_label(),
+            "oauth"
+        );
     }
 }

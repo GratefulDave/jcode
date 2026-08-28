@@ -164,6 +164,12 @@ impl MultiProvider {
                     .unwrap_or_else(|| bare_name.to_string());
                 format!("{}@{}", model_id, provider_display)
             }
+            ModelRouteApiMethod::XaiOauth => {
+                super::subscription_prefixed_spec("xai-oauth", bare_name)
+            }
+            ModelRouteApiMethod::GrokBuild => {
+                super::subscription_prefixed_spec("grok-build", bare_name)
+            }
             ModelRouteApiMethod::Other(method) => {
                 match super::subscription_runtime_prefix_for_api_method(method) {
                     Some(prefix) => super::subscription_prefixed_spec(prefix, bare_name),
@@ -204,6 +210,8 @@ impl MultiProvider {
                 super::subscription_runtime_prefix_for_api_method(method).map(str::to_string)
             }
             ModelRouteApiMethod::OpenRouter => Some("openrouter".to_string()),
+            ModelRouteApiMethod::XaiOauth => Some("xai-oauth".to_string()),
+            ModelRouteApiMethod::GrokBuild => Some("grok-build".to_string()),
             ModelRouteApiMethod::OpenAiCompatible { .. } => profile_id.clone(),
             _ => profile_id.clone(),
         };
@@ -502,6 +510,12 @@ impl MultiProvider {
                 ModelRouteApiMethod::Cursor => return format!("cursor:{model}"),
                 ModelRouteApiMethod::Bedrock => return format!("bedrock:{model}"),
                 ModelRouteApiMethod::AntigravityHttps => return format!("antigravity:{model}"),
+                ModelRouteApiMethod::XaiOauth => {
+                    return super::subscription_prefixed_spec("xai-oauth", model);
+                }
+                ModelRouteApiMethod::GrokBuild => {
+                    return super::subscription_prefixed_spec("grok-build", model);
+                }
                 ModelRouteApiMethod::Other(method) => {
                     if let Some(prefix) =
                         super::subscription_runtime_prefix_for_api_method(&method)
@@ -644,6 +658,20 @@ mod tests {
                 "Copilot",
                 "copilot:claude-sonnet-4-6",
                 Some("copilot"),
+            ),
+            (
+                "grok-4.6",
+                "xai-oauth-responses",
+                "xAI Grok OAuth",
+                "xai-oauth:grok-4.6",
+                Some("xai-oauth"),
+            ),
+            (
+                "xai-oauth:grok-4.6",
+                "xai-oauth-responses",
+                "xAI Grok OAuth",
+                "xai-oauth:grok-4.6",
+                Some("xai-oauth"),
             ),
         ] {
             let selection =

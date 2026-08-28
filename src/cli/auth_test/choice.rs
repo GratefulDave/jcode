@@ -65,6 +65,13 @@ pub(crate) fn tool_smoke_skip_detail_for_choice(
         );
     }
 
+    if matches!(choice, super::provider_init::ProviderChoice::XaiOauth) {
+        return Some(
+            "Skipped: SuperGrok chat smoke already validated the OAuth session. xAI Responses tool streams currently fail with an empty error payload, so post-login tool_smoke is skipped instead of hanging login."
+                .to_string(),
+        );
+    }
+
     if matches!(choice, super::provider_init::ProviderChoice::Fpt) {
         let model = effective_openai_compatible_auth_test_model(
             crate::provider_catalog::FPT_PROFILE,
@@ -231,6 +238,18 @@ mod nvidia_nim_tool_smoke_tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn skips_xai_oauth_tool_smoke_after_chat_validation() {
+        let detail = tool_smoke_skip_detail_for_choice(
+            &super::super::provider_init::ProviderChoice::XaiOauth,
+            Some("grok-4.6"),
+        )
+        .expect("SuperGrok should skip hanging Responses tool_smoke");
+
+        assert!(detail.contains("SuperGrok"));
+        assert!(detail.contains("tool_smoke"));
     }
 
     #[test]

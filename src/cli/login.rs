@@ -391,9 +391,23 @@ pub async fn run_login_provider(
                 ("reason", reason.label()),
             ],
         );
-        return Err(anyhow::anyhow!(
-            crate::auth::login_diagnostics::augment_auth_error_message(provider.id, error_message)
-        ));
+        // SuperGrok credentials are already on disk after device login. Chat
+        // smoke can pass while tool smoke fails; do not abort the login or skip
+        // the running-server auth refresh, or `/model` never gets xai-oauth.
+        if provider.id == "xai-oauth" {
+            eprintln!(
+                "SuperGrok credentials were saved, but post-login runtime checks failed:
+{error_message}
+Continuing so the running jcode session can pick up xai-oauth models."
+            );
+        } else {
+            return Err(anyhow::anyhow!(
+                crate::auth::login_diagnostics::augment_auth_error_message(
+                    provider.id,
+                    error_message
+                )
+            ));
+        }
     }
     auth::AuthStatus::invalidate_cache();
     crate::logging::auth_event(

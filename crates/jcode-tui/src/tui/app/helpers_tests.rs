@@ -160,6 +160,14 @@ fn inferred_reasoning_efforts_use_provider_specific_order_and_max_semantics() {
         inferred_reasoning_efforts(Some("xai-oauth"), Some("grok-4.6")),
         jcode_provider_core::OPENAI_SELECTABLE_EFFORTS
     );
+    assert_eq!(
+        inferred_reasoning_efforts(Some("xai"), Some("grok-code-fast-1")),
+        jcode_provider_core::OPENAI_SELECTABLE_EFFORTS
+    );
+    assert_eq!(
+        inferred_reasoning_efforts(Some("openai-compatible:xai"), Some("grok-4")),
+        jcode_provider_core::OPENAI_SELECTABLE_EFFORTS
+    );
     assert!(inferred_reasoning_efforts(Some("ollama"), Some("llama3")).is_empty());
 }
 

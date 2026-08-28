@@ -72,8 +72,18 @@ pub fn inferred_reasoning_efforts(
     }
 
     // SuperGrok (`xai-oauth`) uses the Responses `reasoning.effort` field with
-    // the OpenAI ladder. Match both the runtime name and the route api_method.
-    if provider.contains("xai-oauth") || model.starts_with("xai-oauth:") {
+    // the OpenAI ladder. Match the runtime id, route api_method, and the TUI
+    // display label (`xAI Grok OAuth`), which does not contain `xai-oauth`.
+    // Paid xAI (`xai` / `openai-compatible:xai`) uses chat-completions
+    // `reasoning_effort` with the same ladder.
+    if provider.contains("xai-oauth")
+        || provider.contains("xai grok")
+        || provider.contains("supergrok")
+        || model.starts_with("xai-oauth:")
+        || provider == "xai"
+        || provider.ends_with(":xai")
+        || provider.contains("openai-compatible:xai")
+    {
         return OPENAI_SELECTABLE_EFFORTS.to_vec();
     }
 
@@ -158,6 +168,19 @@ mod tests {
         );
         assert_eq!(
             inferred_reasoning_efforts(Some("xai-oauth-responses"), Some("xai-oauth:grok-4.6")),
+            OPENAI_SELECTABLE_EFFORTS
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("xAI Grok OAuth"), Some("grok-4.6")),
+            OPENAI_SELECTABLE_EFFORTS,
+            "remote TUI reports the display label, not the xai-oauth runtime id"
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("xai"), Some("grok-code-fast-1")),
+            OPENAI_SELECTABLE_EFFORTS
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai-compatible:xai"), Some("grok-4")),
             OPENAI_SELECTABLE_EFFORTS
         );
     }

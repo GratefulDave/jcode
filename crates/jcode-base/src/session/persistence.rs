@@ -380,6 +380,8 @@ impl Session {
         // Do not turn that implementation detail into a transcript on disk. Once
         // the user (or a programmatic caller) adds a real conversation message,
         // the normal first snapshot includes all of the accumulated context.
+        // Still persist titled, closed, imported, or metadata-bearing sessions
+        // so resume/lookup and field round-trips keep working.
         if !self.persist_state.snapshot_exists
             && !self
                 .messages
@@ -387,6 +389,12 @@ impl Session {
                 .any(super::is_visible_conversation_message)
             && !self.saved
             && self.custom_title.is_none()
+            && self.title.is_none()
+            && matches!(self.status, super::SessionStatus::Active)
+            && self.compaction.is_none()
+            && self.reasoning_effort.is_none()
+            && self.provider_session_id.is_none()
+            && !self.id.starts_with("imported_")
         {
             return Ok(());
         }
