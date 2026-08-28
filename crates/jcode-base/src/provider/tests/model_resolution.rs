@@ -2477,6 +2477,57 @@ fn bare_subscription_profile_model_ids_route_to_their_runtime_not_the_active_pro
     });
 }
 
+#[test]
+fn fork_preserves_xai_oauth_runtime_instead_of_falling_through_to_bedrock() {
+    with_clean_provider_test_env(|| {
+        let rt = enter_test_runtime();
+        let _runtime_guard = rt.enter();
+        let xai = Arc::new(StubExternalRuntime::new(
+            "xai-oauth",
+            "xAI Grok OAuth",
+            "xai-oauth-responses",
+            &["grok-4.6", "grok-4.5"],
+        )) as Arc<dyn Provider>;
+        let provider = MultiProvider {
+            claude: RwLock::new(None),
+            anthropic: RwLock::new(None),
+            openai: RwLock::new(None),
+            copilot_api: RwLock::new(None),
+            antigravity: RwLock::new(None),
+            gemini: RwLock::new(None),
+            cursor: RwLock::new(None),
+            bedrock: RwLock::new(None),
+            openrouter: RwLock::new(None),
+            openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
+            active_openai_compatible_profile: RwLock::new(None),
+            active: RwLock::new(ActiveProvider::OpenRouter),
+            use_claude_cli: false,
+            startup_notices: RwLock::new(Vec::new()),
+            initial_provider: None,
+            routes_memo: std::sync::Mutex::new(None),
+            post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let registry = ProviderRegistry::new(&provider);
+        registry.install_compatible_profile("xai-oauth", xai.clone());
+        provider
+            .set_model("xai-oauth:grok-4.6")
+            .expect("SuperGrok prefixed model should bind the xai-oauth runtime");
+        assert_eq!(
+            provider.fork_model_switch_request(provider.active_provider(), &provider.model()),
+            "xai-oauth:grok-4.6"
+        );
+
+        let forked = provider.fork();
+        assert_eq!(forked.model(), "grok-4.6");
+        assert_eq!(forked.display_name(), "xai-oauth");
+        assert_eq!(forked.runtime_display_name(), "xai-oauth");
+        forked
+            .set_model("xai-oauth:grok-4.5")
+            .expect("forked swarm worker must still be able to select SuperGrok models");
+        assert_eq!(forked.model(), "grok-4.5");
+    });
+}
+
 /// Regression: after a SuperGrok login the persisted config is
 /// `default_model = "grok-4.6"` (bare) + `default_provider = "xai-oauth"`.
 /// `xai-oauth` is neither an ActiveProvider key nor an OpenAI-compatible

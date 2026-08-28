@@ -917,6 +917,7 @@ impl OpenRouterProvider {
             profile_id,
             Some(id)
                 if id.eq_ignore_ascii_case("zai")
+                    || id.eq_ignore_ascii_case("xai")
                     || id.eq_ignore_ascii_case("omlx")
                     || id.eq_ignore_ascii_case("mtplx")
         )

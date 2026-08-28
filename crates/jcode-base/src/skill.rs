@@ -1284,13 +1284,13 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         write_test_skill(temp.path(), ".jcode", "session-skill");
 
-        let prev_cwd = std::env::current_dir().expect("cwd");
+        let prev_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         // reload_global must not pick up project-local skills even when the
         // process cwd contains them (daemon startup cwd independence).
         std::env::set_current_dir(temp.path()).expect("chdir");
         let mut registry = SkillRegistry::default();
         let result = registry.reload_global();
-        std::env::set_current_dir(prev_cwd).expect("restore cwd");
+        let _ = std::env::set_current_dir(prev_cwd);
 
         result.expect("reload skills");
         assert!(

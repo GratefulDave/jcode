@@ -901,6 +901,7 @@ fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
         "gemini" => Some("gemini"),
         "antigravity" => Some("antigravity"),
         "xai-oauth" | "supergrok" => Some("xai-oauth"),
+        "grok-build" => Some("grok-build"),
         _ => None,
     }
 }
@@ -1186,6 +1187,7 @@ pub fn model_switch_request_for_provider_id(
         Some("gemini") => format!("gemini:{}", model),
         Some("antigravity") => format!("antigravity:{}", model),
         Some("xai-oauth") => format!("xai-oauth:{}", model),
+        Some("grok-build") => format!("grok-build:{}", model),
         _ => model.to_string(),
     }
 }
@@ -1521,6 +1523,9 @@ mod tests {
                 crate::provider_catalog::LoginProviderTarget::XaiOauth => {
                     Some(("xai-oauth", "xai-oauth", "openrouter", "xai-oauth"))
                 }
+                crate::provider_catalog::LoginProviderTarget::GrokBuild => {
+                    Some(("grok-build", "grok-build", "openrouter", "grok-build"))
+                }
                 _ => None,
             }) else {
                 continue;
@@ -1599,6 +1604,8 @@ mod tests {
             "copilot",
             "gemini",
             "antigravity",
+            "xai-oauth",
+            "grok-build",
         ] {
             assert!(
                 covered.contains(&expected),
@@ -1635,6 +1642,8 @@ mod tests {
             ("copilot", "copilot:shared-model"),
             ("gemini", "gemini:shared-model"),
             ("antigravity", "antigravity:shared-model"),
+            ("xai-oauth", "xai-oauth:shared-model"),
+            ("grok-build", "grok-build:shared-model"),
             ("cerebras", "cerebras:shared-model"),
         ] {
             assert_eq!(

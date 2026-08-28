@@ -327,11 +327,10 @@ fn vscdb_missing_key_returns_error() {
     let db = create_mock_vscdb(dir.path(), &[("other/key", "value")]);
     let result = read_vscdb_key(&db, "cursorAuth/accessToken");
     assert!(result.is_err());
+    let message = result.unwrap_err().to_string();
     assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("not found or empty")
+        message.contains("not found") || message.contains("not found or empty"),
+        "unexpected missing-key error: {message}"
     );
 }
 

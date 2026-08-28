@@ -149,6 +149,20 @@ pub(super) fn picker_route_model_spec(entry: &PickerEntry, route: &PickerOption)
             openrouter_route_model_id(&bare_name),
             route.provider
         ),
+        crate::provider::ModelRouteApiMethod::XaiOauth => {
+            if bare_name.starts_with("xai-oauth:") {
+                bare_name
+            } else {
+                format!("xai-oauth:{bare_name}")
+            }
+        }
+        crate::provider::ModelRouteApiMethod::GrokBuild => {
+            if bare_name.starts_with("grok-build:") {
+                bare_name
+            } else {
+                format!("grok-build:{bare_name}")
+            }
+        }
         _ => bare_name,
     }
 }

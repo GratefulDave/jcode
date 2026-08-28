@@ -1431,6 +1431,26 @@ fn direct_zai_profile_exposes_openai_reasoning_effort_ladder() {
 }
 
 #[test]
+fn direct_xai_profile_exposes_openai_reasoning_effort_for_grok_models() {
+    let provider = OpenRouterProvider {
+        profile_id: Some("xai".to_string()),
+        model: Arc::new(RwLock::new("grok-code-fast-1".to_string())),
+        supports_provider_features: false,
+        send_openrouter_headers: false,
+        ..make_custom_compatible_provider()
+    };
+
+    assert_eq!(
+        provider.available_efforts(),
+        jcode_provider_core::OPENAI_SELECTABLE_EFFORTS
+    );
+    provider
+        .set_reasoning_effort("high")
+        .expect("xAI Grok API-key profile should accept high effort");
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+}
+
+#[test]
 fn openrouter_profile_exposes_unified_reasoning_effort() {
     let provider = make_provider();
 
@@ -1889,6 +1909,58 @@ fn local_mtplx_chat_request_sends_top_level_reasoning_effort() {
     assert!(
         !request.contains(r#""reasoning":{"effort""#),
         "mtplx should not send OpenRouter unified reasoning: {request}"
+    );
+}
+
+#[test]
+fn direct_xai_chat_request_sends_top_level_reasoning_effort() {
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let provider = OpenRouterProvider {
+        api_base,
+        model: Arc::new(RwLock::new("grok-code-fast-1".to_string())),
+        profile_id: Some("xai".to_string()),
+        supports_provider_features: false,
+        supports_model_catalog: false,
+        send_openrouter_headers: false,
+        ..make_custom_compatible_provider()
+    };
+    provider
+        .set_reasoning_effort("high")
+        .expect("xAI Grok API-key profile should accept high effort");
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.contains(r#""reasoning_effort":"high""#),
+        "xAI request should include top-level reasoning_effort: {request}"
+    );
+    assert!(
+        !request.contains(r#""reasoning":{"effort""#),
+        "xAI chat-completions should not send OpenRouter unified reasoning: {request}"
     );
 }
 
